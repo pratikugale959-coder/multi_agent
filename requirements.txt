@@ -1,0 +1,17 @@
+# Core framework
+google-adk>=2.12.0
+
+# LLM / embedding gateway to NVIDIA NIM
+litellm>=1.100.0
+
+# Vector database (serverless)
+pinecone>=6.0.0
+
+# Filesystem MCP server (used by the Code Explainer worker and the MCP scripts)
+mcp>=1.24.0
+
+# Environment loading
+python-dotenv>=1.0.0
+
+# Testing
+pytest>=8.0.0
