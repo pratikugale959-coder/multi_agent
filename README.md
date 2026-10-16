@@ -87,7 +87,8 @@ demo/
 ├── tests/                       # offline pytest suite
 ├── scripts/                     # live integration checks (need real keys)
 ├── docs/
-│   └── architecture.drawio      # draw.io architecture map (open in diagrams.net)
+│   ├── architecture.drawio      # draw.io architecture map (open in diagrams.net)
+│   └── PLANNING.md              # the plan behind the project
 ├── requirements.txt
 ├── pytest.ini
 ├── ruff.toml                    # shared lint/format configuration
