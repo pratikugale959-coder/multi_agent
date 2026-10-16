@@ -29,6 +29,10 @@ terminal (`adk run`) and web (`adk web`) interfaces — there is no custom websi
         Pinecone        Filesystem MCP     ast (no AI)        files + README
 ```
 
+> 📐 **Editable diagram:** [`docs/architecture.drawio`](docs/architecture.drawio) — open it at
+> [app.diagrams.net](https://app.diagrams.net) (draw.io). It maps every layer shown below:
+> clients → coordinator → four workers → tools → the 6-stage RAG pipeline → external services.
+
 The coordinator has **no tools of its own** and cannot answer technical questions
 directly. It can only delegate, which keeps every answer traceable to a worker and its
 tools. Workers are forbidden from handing off to each other
@@ -82,6 +86,8 @@ demo/
 ├── target_project/              # the code under analysis (separate from the helper)
 ├── tests/                       # offline pytest suite
 ├── scripts/                     # live integration checks (need real keys)
+├── docs/
+│   └── architecture.drawio      # draw.io architecture map (open in diagrams.net)
 ├── requirements.txt
 ├── pytest.ini
 ├── ruff.toml                    # shared lint/format configuration
