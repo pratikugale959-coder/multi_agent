@@ -1,391 +1,144 @@
 # Multi-Agent Code Helper
-
-An AI assistant that helps a developer understand an unfamiliar Python codebase. Ask it
-*where* something is implemented, *what* a file does, *how* modules connect, or *how to
-get started*, and it answers from the actual repository.
-
-The system is built on **Google ADK** with **one coordinator and four specialist
-workers**, backed by a **custom RAG pipeline** (no LangChain, no LlamaIndex) that uses
-**NVIDIA NIM** embeddings and **Pinecone** serverless storage. It runs through the ADK
-terminal (`adk run`) and web (`adk web`) interfaces — there is no custom website.
-
----
-
+An AI assistant that helps developers understand an unfamiliar Python codebase. Ask where something is implemented, what a file does, how modules connect, or how to get started—and receive answers grounded in the target repository.
+Built with **Google ADK**, one coordinator, four specialist workers, a custom RAG pipeline, **NVIDIA NIM** embeddings, and **Pinecone** serverless storage. It supports ADK terminal and web interfaces; it does not include a custom website.
 ## 1. Architecture
-
+```text
+User
+ |
+Coordinator (routes requests; does not answer directly)
+ |-- code_searcher       -> rag_search -> RAG / Pinecone
+ |-- code_explainer      -> Filesystem MCP + read_project_file
+ |-- architecture_mapper -> list_project_files + inspect_imports (Python AST)
+ `-- onboarding_guide    -> get_project_overview (files + README)
 ```
-                         ┌────────────────────────┐
-            user ───────▶│      coordinator        │  (Boss)
-                         │  routes, never answers  │
-                         └───────────┬────────────┘
-             ┌───────────────┬───────┴────────┬─────────────────┐
-             ▼               ▼                ▼                 ▼
-      ┌─────────────┐ ┌─────────────┐ ┌──────────────────┐ ┌────────────────┐
-      │code_searcher│ │code_explainer│ │architecture_mapper│ │onboarding_guide│
-      │  rag_search │ │ MCP + read  │ │ list_project_files│ │ get_project_   │
-      │             │ │ _project_file│ │ inspect_imports   │ │ overview       │
-      └──────┬──────┘ └──────┬──────┘ └────────┬─────────┘ └───────┬────────┘
-             │               │                 │                   │
-        Pinecone        Filesystem MCP     ast (no AI)        files + README
-```
-
-> 📐 **Editable diagram:** [`docs/architecture.drawio`](docs/architecture.drawio) — open it at
-> [app.diagrams.net](https://app.diagrams.net) (draw.io). It maps every layer shown below:
-> clients → coordinator → four workers → tools → the 6-stage RAG pipeline → external services.
-
-The coordinator has **no tools of its own** and cannot answer technical questions
-directly. It can only delegate, which keeps every answer traceable to a worker and its
-tools. Workers are forbidden from handing off to each other
-(`disallow_transfer_to_parent` / `disallow_transfer_to_peers`), so routing is always a
-single `coordinator → worker` hop.
-
----
-
-## 2. Technology stack (verified in this environment)
-
-| Component | Required / used | Verified in this repo |
-|---|---|---|
-| Language | Python 3.13.7 | ✅ |
-| Agent framework | `google-adk` | 2.12.0 |
-| LLM gateway | LiteLLM | 1.105.1 |
-| Chat model | `meta/llama-3.2-11b-vision-instruct` via `nvidia_nim/…` | used by all 5 agents |
-| Embedding model | `nvidia/nemotron-3-embed-1b` via `nvidia_nim/…` | ✅ live dimension = **2048** |
-| Vector DB | Pinecone serverless, 2048-dim, cosine, aws/us-east-1 | ✅ index `code-helper` |
-| Filesystem | Node.js v24.21.0 + `npx` 11.19.0, `@modelcontextprotocol/server-filesystem` | ✅ |
-| Env loading | `python-dotenv` | 1.2.4 |
-| Tests | `pytest` | 9.1.1 |
-
-The chat model is created **once** (`code_helper/config.py::get_chat_model`) and shared by
-all five agents. Embedding configuration is kept **separate** and never reused for chat.
-
----
-
-## 3. Project layout
-
-```
+Editable diagram: [`docs/architecture.drawio`](docs/architecture.drawio), open with [diagrams.net](https://app.diagrams.net).
+The coordinator has no tools of its own and delegates to one worker. Workers cannot transfer tasks to peers or back to the coordinator, keeping routing to one coordinator-to-worker hop.
+## 2. Technology Stack
+| Component | Technology / configuration |
+|---|---|
+| Language | Python 3.13.7 (Python 3.11+ required) |
+| Agent framework | Google ADK 2.12.0 |
+| LLM gateway | LiteLLM 1.105.1 |
+| Chat model | `meta/llama-3.2-11b-vision-instruct` via NVIDIA NIM |
+| Embedding model | `nvidia/nemotron-3-embed-1b` via NVIDIA NIM |
+| Vector database | Pinecone serverless, 2048 dimensions, cosine similarity |
+| Filesystem tools | Node.js / npx + `@modelcontextprotocol/server-filesystem` |
+| Environment | `python-dotenv` |
+| Tests | `pytest` 9.1.1 |
+The chat model is created once in `code_helper/config.py` and shared by all five agents. Embedding configuration is separate from chat configuration.
+## 3. Project Layout
+```text
 demo/
-├── code_helper/                 # the helper implementation (the deliverable)
-│   ├── __init__.py              # exposes root_agent for ADK discovery
-│   ├── agent.py                 # coordinator (root_agent)
-│   ├── agents.py                # the four worker agents
-│   ├── config.py                # env loading, validation, shared chat model
-│   ├── ingestion.py             # RAG stage 1 – file discovery + safe reading
-│   ├── chunking.py              # RAG stage 2 – chunk_code()
-│   ├── embeddings.py            # RAG stage 3 – NVIDIA NIM embeddings
-│   ├── vector_store.py          # RAG stage 4 – Pinecone
-│   ├── retrieval.py             # RAG stage 5 – retrieve()/format_results()
-│   ├── rag_pipeline.py          # orchestrates stages 1–4 (+ answer_question)
-│   ├── index_codebase.py        # CLI: python -m code_helper.index_codebase
-│   ├── mcp_filesystem.py        # Filesystem MCP wiring (restricted, read-only)
-│   ├── paths.py                 # path-traversal guard
-│   └── tools/
-│       ├── search_tools.py      # rag_search
-│       ├── explain_tools.py     # read_project_file
-│       ├── architecture_tools.py# list_project_files, inspect_imports
-│       └── onboarding_tools.py  # get_project_overview
-├── target_project/              # the code under analysis (separate from the helper)
-├── tests/                       # offline pytest suite
-├── scripts/                     # live integration checks (need real keys)
-├── docs/
-│   ├── architecture.drawio      # draw.io architecture map (open in diagrams.net)
-│   └── PLANNING.md              # the plan behind the project
+├── code_helper/
+│   ├── __init__.py             # ADK root_agent discovery
+│   ├── agent.py                # Coordinator
+│   ├── agents.py               # Four worker agents
+│   ├── config.py               # Environment and model configuration
+│   ├── ingestion.py            # RAG: safe file discovery and reading
+│   ├── chunking.py             # Line-based chunking
+│   ├── embeddings.py            # NVIDIA NIM embeddings
+│   ├── vector_store.py          # Pinecone storage
+│   ├── retrieval.py             # Similarity retrieval and formatting
+│   ├── rag_pipeline.py          # RAG orchestration
+│   ├── index_codebase.py        # Indexing CLI
+│   ├── mcp_filesystem.py        # Restricted, read-only Filesystem MCP
+│   ├── paths.py                 # Path-traversal protection
+│   └── tools/                   # Agent tool implementations
+├── target_project/              # Repository being analysed
+├── tests/                       # Offline pytest suite
+├── scripts/                     # Live integration checks
+├── docs/                        # Architecture diagram and planning
 ├── requirements.txt
 ├── pytest.ini
-├── ruff.toml                    # shared lint/format configuration
-├── .gitignore
-├── .env.example                 # placeholders only
+├── ruff.toml
+├── .env.example
 └── README.md
 ```
-
-`target_project/` holds the repository the agents analyse; the helper never mixes its own
-source into the index.
-
----
-
-## 4. The RAG pipeline (implemented by hand)
-
-Each stage is its own module. The pipeline is called by the `code_searcher` tool and by
-`python -m code_helper.index_codebase`.
-
-| Stage | Module | What it does |
+The helper indexes `target_project/`, not its own source files.
+## 4. RAG Pipeline
+The custom RAG implementation does not use LangChain or LlamaIndex.
+| Stage | Module | Purpose |
 |---|---|---|
-| 1. Ingestion | `ingestion.py` | Walks the target, skips `.git`, `.venv`, caches, secrets, binary and oversized files; preserves the original text and relative path. |
-| 2. Chunking | `chunking.py` | `chunk_code()` — a custom line-based sliding window. |
-| 3. Embeddings | `embeddings.py` | `nvidia/nemotron-3-embed-1b` via LiteLLM; batching, retries, dimension validation. |
-| 4. Storage | `vector_store.py` | Pinecone serverless index, deterministic vector IDs, metadata (file + lines + text). |
-| 5. Retrieval | `retrieval.py` | `retrieve()` — embeds the query with the **same** model and returns top-k with provenance. |
-
-### Chunking parameters
-- **chunk size = 100 lines**, **overlap = 20 lines** (starting values; configurable via
-  `CHUNK_SIZE` / `CHUNK_OVERLAP`). Each chunk carries a stable id `file:start-end`, the
-  relative filename, the start and end line, and the original text.
-
-### Limitations of line-based chunking (honest notes)
-- A chunk can begin mid-function, so a retrieved snippet is a *pointer* into the file, not
-  a self-contained unit.
-- A long function may be split across chunks; overlap reduces but does not remove this.
-- Whitespace-heavy files yield low-information chunks; repetitive files yield
-  near-duplicate chunks (de-duplicated within a file).
-- Overlap increases both embedding cost and index size.
-- Because the target files here are short, several whole files become a single chunk, so
-  similarity scores between different files can be close. The `upsert` question still
-  ranks `vector_store.py` first, but scores are not sharply separated.
-
----
-
-## 5. Agents and their tools
-
-| Agent | Type | Responsibility | Tools |
-|---|---|---|---|
-| `coordinator` | root (Boss) | Route a question to one worker and return its answer. | *(none — delegates only)* |
-| `code_searcher` | worker | Where is X implemented? | `rag_search` |
-| `code_explainer` | worker | What does a whole file do? | Filesystem **MCP** toolset + `read_project_file` |
-| `architecture_mapper` | worker | Imports, dependencies, entry points. | `list_project_files`, `inspect_imports` |
-| `onboarding_guide` | worker | Purpose, setup, reading order. | `get_project_overview` |
-
-### The five custom tools (all plain Python, typed, documented, defensive)
-
-| Tool | Signature | AI used? |
+| 1. Ingestion | `ingestion.py` | Finds files; skips Git, virtual environments, caches, secrets, binaries, and oversized files |
+| 2. Chunking | `chunking.py` | Splits code into overlapping line-based chunks |
+| 3. Embeddings | `embeddings.py` | Creates NVIDIA NIM embeddings with batching, retries, and dimension checks |
+| 4. Storage | `vector_store.py` | Stores vectors and file/line/text metadata in Pinecone |
+| 5. Retrieval | `retrieval.py` | Embeds the query with the same model and returns top-k results with source details |
+Default chunk size is **100 lines**, with **20 lines of overlap**. Configure these using `CHUNK_SIZE` and `CHUNK_OVERLAP`. Each chunk records its file, line range, stable ID, and original text.
+**Chunking limitations:** chunks may begin mid-function or split long functions; overlap only partly mitigates this. Whitespace-heavy or repetitive files may produce low-information or similar chunks. Overlap also increases embedding cost and index size.
+## 5. Agents and Tools
+| Agent | Responsibility | Main tool(s) |
 |---|---|---|
-| `rag_search` | `rag_search(query: str, top_k: int = 5) -> str` | yes (embeddings + LLM reasoning) |
-| `read_project_file` | `read_project_file(file_path: str) -> str` | **no** |
-| `list_project_files` | `list_project_files() -> str` | **no** |
-| `inspect_imports` | `inspect_imports(file_path: str) -> str` | **no** (`ast` only) |
-| `get_project_overview` | `get_project_overview() -> str` | **no** |
-
-The last three (plus `read_project_file`) are fully deterministic, satisfying the
-"at least one tool must operate without AI" requirement — in fact four do. The MCP
-server's built-in tools are **not** counted toward this minimum.
-
-Tool functions expose only user-facing arguments. Internal configuration is resolved via a
-module-level `get_settings` seam, because ADK turns every parameter into something the
-model must fill in (this was a real bug — see §9).
-
----
-
-## 6. Filesystem MCP
-
-The `code_explainer` connects to the official Filesystem MCP server through ADK's
-supported `McpToolset` (note: `MCPToolset` is deprecated in ADK 2.12) using
-`StdioConnectionParams`:
-
-```python
-McpToolset(
-    connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="npx",
-            args=["-y", "@modelcontextprotocol/server-filesystem", str(target_root)],
-            env=safe_subprocess_env(),
-        ),
-        timeout=30.0,
-    ),
-    tool_filter=list(READ_ONLY_MCP_TOOLS),
-)
-```
-
-Restrictions:
-- **Root**: only the target project directory is passed. Never a drive root, never the
-  `.env` location.
-- **Read-only**: a `tool_filter` exposes only read tools (`read_text_file`,
-  `list_directory`, `search_files`, …). `write_file`, `edit_file`, `move_file`,
-  `create_directory` are **not** surfaced.
-- **Sanitised environment**: the `npx` child process receives only an allow-list of
-  variables; anything whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or
-  `CREDENTIAL` is removed, so the MCP server cannot read our API keys.
-- If MCP is unavailable, the agent still works via `read_project_file`
-  (set `DISABLE_MCP_FILESYSTEM=1` to skip MCP deliberately).
-
-The tool names above were **verified against the live server**, not guessed (see §8).
-
----
-
-## 7. Setup and running
-
+| `coordinator` | Routes a question to one worker | Delegation only |
+| `code_searcher` | Finds where code is implemented | `rag_search` |
+| `code_explainer` | Explains a file's purpose and contents | Filesystem MCP, `read_project_file` |
+| `architecture_mapper` | Lists files and analyses imports | `list_project_files`, `inspect_imports` |
+| `onboarding_guide` | Explains purpose, setup, and reading order | `get_project_overview` |
+The five custom Python tools are `rag_search`, `read_project_file`, `list_project_files`, `inspect_imports`, and `get_project_overview`. Four are deterministic and do not use AI; `inspect_imports` uses Python's `ast` module. Internal settings are loaded by the tools rather than exposed as model-supplied arguments.
+## 6. Filesystem MCP and Security
+The `code_explainer` uses ADK's `McpToolset` and `StdioConnectionParams` to connect to the official Filesystem MCP server.
+- MCP is restricted to the `target_project/` directory.
+- Only allow-listed read tools are exposed; write, edit, move, and create operations are not exposed.
+- The subprocess receives a sanitised environment that removes variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL`.
+- If MCP is unavailable, `read_project_file` remains as a fallback. Set `DISABLE_MCP_FILESYSTEM=1` to disable MCP deliberately.
+- Secrets belong in `.env`, which should never be committed. `.env.example` contains placeholders.
+- Diagnostic configuration output is redacted. Missing keys produce a configuration error before network calls.
+- Path traversal is guarded, and the vector store does not delete the index or vectors automatically.
+## 7. Setup and Run
 ### Prerequisites
-- Python 3.11+ (verified on 3.13.7)
-- Node.js + `npx` (verified on Node 24 / npx 11)
-- An NVIDIA NIM API key and a Pinecone API key
-
-### Install
+- Python 3.11+
+- Node.js and `npx`
+- NVIDIA NIM API key and Pinecone API key
+### Install dependencies
 ```bash
 pip install -r requirements.txt
 ```
-
-### Configure
-Copy the template and fill in your keys (never commit `.env`):
-```bash
-copy .env.example .env      # Windows
-cp .env.example .env        # macOS/Linux
+### Configure environment
+Run from `demo/`:
+```powershell
+Copy-Item .env.example .env
 ```
-Required variables: `NVIDIA_API_KEY` (or `NVIDIA_NIM_API_KEY`), `NVIDIA_BASE_URL`,
-`NVIDIA_CHAT_MODEL`, `NVIDIA_EMBED_MODEL`, `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`,
-`PINECONE_CLOUD`, `PINECONE_REGION` (plus optional `TARGET_REPO_PATH`,
-`EMBEDDING_DIMENSION`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`, `PINECONE_NAMESPACE`).
-
-### Index the target project (once)
+Add the required values to `.env`: `NVIDIA_API_KEY` (or `NVIDIA_NIM_API_KEY`), `NVIDIA_BASE_URL`, `NVIDIA_CHAT_MODEL`, `NVIDIA_EMBED_MODEL`, `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, `PINECONE_CLOUD`, and `PINECONE_REGION`.
+Optional settings include `TARGET_REPO_PATH`, `EMBEDDING_DIMENSION`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`, and `PINECONE_NAMESPACE`.
+### Index and verify the target project
 ```bash
 python -m code_helper.index_codebase --progress
-python -m code_helper.index_codebase --stats      # verify vector count
+python -m code_helper.index_codebase --stats
 ```
-
 ### Run the agents
+Run these commands from `demo/`, the directory containing `code_helper/`:
 ```bash
-adk run code_helper        # terminal, run from the directory containing code_helper/
-adk web                    # web UI, run from the same directory
+adk run code_helper
+adk web
 ```
-> Both commands must be run from `demo/` (the folder that contains `code_helper/`), because
-> that is where ADK discovers `root_agent`.
-
-### Live integration checks (optional, need real keys/network)
+`adk run` provides a terminal interface; `adk web` starts the local web interface.
+### Optional live integration checks
+These require valid keys and network access:
 ```bash
-python scripts/check_embeddings.py     # verifies the embedding model + dimension
-python scripts/index_and_search.py     # indexes + retrieves against real Pinecone
-python scripts/mcp_list_tools.py       # lists the real MCP tools, reads a file via MCP
-python scripts/run_agent_demo.py       # runs the coordinator and prints routing
+python scripts/check_embeddings.py
+python scripts/index_and_search.py
+python scripts/mcp_list_tools.py
+python scripts/run_agent_demo.py
 ```
-
----
-
-## 8. Verified results (real runs, not claims)
-
-**Offline unit tests** — deterministic, mocked, no keys/network:
-```
-$ python -m pytest
-118 passed
-```
-
-**NVIDIA NIM embeddings** (`scripts/check_embeddings.py`):
-```
-Configured embedding model: nvidia_nim/nvidia/nemotron-3-embed-1b
-Verified dimension        : 2048
-First coordinates         : [0.5589, 0.0271, -0.1868, -0.0474]
-EMBEDDING CHECK PASSED
-```
-
-**Pinecone indexing + retrieval** (`scripts/index_and_search.py`):
-```
-chunks_created: 6   chunks_indexed: 6   embedding_dimension: 2048
-Index stats: { total_vector_count: 6, dimension: 2048, metric: "cosine",
-               namespaces: { "code-helper": 6 } }
-
-QUERY: Where is the upsert to the vector database implemented?
-  [1] vector_store.py lines 81-171  score=0.7603
-  [2] vector_store.py lines 1-100   score=0.7377
-```
-
-**Filesystem MCP** (`scripts/mcp_list_tools.py`):
-```
-Server exposes 14 tools; our 10 allow-listed read-only tools all exist.
-Allowed directories: E:\assignment\demo\target_project
-Read 2702 characters from target_project/config.py via MCP.
-```
-
-**Agent routing** (`scripts/run_agent_demo.py`) — `ROUTING: coordinator -> <worker>`
-(re-verified after the worker-transfer fix):
-```
-coordinator -> code_searcher        (cited vector_store.py lines 81-171)
-coordinator -> code_explainer       (explained query_pipeline.py end to end; used MCP)
-coordinator -> architecture_mapper  (parsed real imports per module)
-```
-
-**ADK terminal interface** (`adk run code_helper`, run from `demo/`):
-```
-Running agent coordinator, type exit to exit.
-[user]: Where is the upsert function implemented?
-... LiteLLM completion() model= meta/llama-3.2-11b-vision-instruct; provider = nvidia_nim
-[code_searcher]: The upsert function is implemented in the vector_store.py file,
-                 lines 81-171, with a similarity score of 0.7294.
-```
-(Piping a single line makes ADK abort the session at EOF, which is expected.)
-
-**ADK web interface** (`adk web`, run from `demo/`):
-```
-+-----------------------------------------------------------------------------+
-| ADK Web Server started                                                      |
-| For local testing, access at http://127.0.0.1:8765.                         |
-+-----------------------------------------------------------------------------+
-GET /list-apps -> HTTP 200: ["code_helper"]
-```
-
-The offline tests are clearly **mocked** (`tests/`); the four scripts above are the
-**real** integration checks.
-
----
-
-## 9. Problems found and verified fixes
-
-**Problem 1 — `rag_search` crashed when the model sent `top_k` as a string.**
-Running the coordinator end to end raised:
-`TypeError: '<=' not supported between instances of 'str' and 'int'`.
-The LLM emitted `top_k="5"`.
-*Fix*: coerce with `int(top_k)` and return a friendly error for non-numeric values.
-*Verified*: the coordinator answers the `upsert` question successfully, and
-`test_rag_search_accepts_string_top_k` guards it.
-
-**Problem 2 — internal `settings` argument leaked into the tools.**
-ADK exposes every tool parameter to the model as a function argument, so the model was
-prompted to fill in `settings` and passed a string:
-`AttributeError: 'str' object has no attribute 'target_repo_path'`.
-*Fix*: the five public tools now take only user-facing arguments and read configuration
-through a module-level `get_settings` seam. `test_required_tool_signatures_are_minimal`
-locks the signatures.
-
-**Problem 3 — workers delegated to each other.**
-A question produced `coordinator -> onboarding_guide -> code_explainer`, and the final
-answer became a confused meta-response.
-*Fix*: set `disallow_transfer_to_parent` and `disallow_transfer_to_peers` on every worker
-so routing is always one hop from the coordinator.
-
----
-
-## 10. Sample questions, answers and responsible agents
-
-**Q1 — "Where is the upsert to the Pinecone vector database implemented?"**
-→ answered by **`code_searcher`** (via `rag_search`):
-> The upsert to the Pinecone vector database is implemented in `vector_store.py`, in the
-> `upsert_to_vector_db()` function at lines 81-171. It upserts the vectors and metadata
-> into the Pinecone index and falls back to a local JSON store when no Pinecone key is
-> configured.
-
-Source: `vector_store.py` lines 81-171 (similarity 0.7603).
-
-**Q2 — "What does the file query_pipeline.py do?"**
-→ answered by **`code_explainer`** (read the whole file via MCP):
-> `query_pipeline.py` is the online query pipeline (stages 5-8). It embeds the user's
-> question, retrieves the top-k chunks, injects them into a grounded prompt, and asks the
-> LLM for an answer citing only the retrieved context. Its functions are `embed_query`,
-> `retrieve_top_k`, `build_prompt_with_context`, `generate_answer` and `run_query_pipeline`.
-
-Source: `query_pipeline.py` (read in full).
-
-**Q3 — "How do the modules in this project import and depend on each other?"**
-→ answered by **`architecture_mapper`** (deterministic `ast` analysis):
-> `config.py` imports `pathlib` and `dotenv`. `indexer.py` imports `config`, `vector_store`
-> and `openai`. `main.py` imports `config`, `indexer` and `query_pipeline`.
-> `query_pipeline.py` imports `config` and `vector_store`. `vector_store.py` imports
-> `config` and `pinecone`. The CLI entry point is `main.py` (it has a `__main__` guard).
-
-Source: `inspect_imports` output per file.
-
----
-
-## 11. Security notes
-
-- Credentials live only in `.env` (git-ignored). `.env.example` contains placeholders.
-- `describe_configuration()` and `describe_mcp_configuration()` return redacted views for
-  diagnostics and never include secret values.
-- Missing keys raise a clear `ConfigError` **before** any network call, and the offline
-  test suite runs with no keys at all.
-- The MCP server is confined to the target project and receives a sanitised environment.
-- The vector store never deletes the index or vectors; deletion requires a deliberate
-  action outside this codebase.
-
----
-
-## 12. Known limitations
-
-- Chunk quality is limited by line-based splitting (§4).
-- The 11B chat model can still add a claim a tool did not report (e.g. suggesting an
-  import that `inspect_imports` did not list); the agent instructions tell it not to, but
-  model behaviour is not fully deterministic. Treat tool output as the ground truth.
-- `adk web` requires a browser; it is the same agent package as `adk run`.
+## 8. Verification Results
+The README records these results from the project environment:
+- **Offline tests:** `python -m pytest` — **118 passed**. Tests are mocked and do not require keys or network access.
+- **NVIDIA NIM embeddings:** embedding model verified; vector dimension **2048**.
+- **Pinecone:** 6 chunks indexed; index dimension 2048 with cosine similarity. A test query about vector upsert ranked `vector_store.py` first.
+- **Filesystem MCP:** server exposed 14 tools; all 10 allow-listed read-only tools were present, and a project file was read through MCP.
+- **Agent routing:** the coordinator routed test questions to `code_searcher`, `code_explainer`, and `architecture_mapper`.
+- **ADK terminal:** a query about the upsert implementation returned `vector_store.py`, lines 81–171.
+- **ADK web:** server started locally and `/list-apps` returned HTTP 200 for `code_helper`.
+The four scripts above are live integration checks; the offline unit tests are mocked.
+## 9. Issues Fixed
+1. **String `top_k`:** the model sometimes supplied `"5"` as a string. The tool now converts it to an integer and returns a friendly error for invalid input; a regression test covers this.
+2. **Leaked internal settings argument:** ADK exposed an internal `settings` parameter to the model. Public tools now accept only user-facing arguments and obtain configuration through `get_settings`.
+3. **Worker-to-worker delegation:** workers could previously delegate to each other and produce confused answers. Transfer restrictions now enforce one-hop coordinator-to-worker routing.
+## 10. Example Questions
+- **“Where is the upsert to Pinecone implemented?”** `code_searcher` uses RAG to locate the relevant function and return file/line references.
+- **“What does `query_pipeline.py` do?”** `code_explainer` reads the file and explains its query, retrieval, context-building, and answer-generation flow.
+- **“How do modules import and depend on one another?”** `architecture_mapper` uses deterministic Python AST analysis to inspect imports and entry points.
+## 11. Known Limitations
+- Line-based chunks may not preserve complete function boundaries.
+- The language model may occasionally add a claim not supported by tool output; treat retrieved code and deterministic tool results as the ground truth.
+- `adk web` requires a browser and uses the same agent package as `adk run`.
