@@ -73,6 +73,13 @@ def test_metadata_payload_is_scalar_only() -> None:
     assert all(isinstance(v, (str, int, float, bool)) for v in metadata.values())
 
 
+def test_embedding_text_prepends_the_file_path() -> None:
+    chunk = chunk_code(_numbered_text(10), "pkg/mod.py")[0]
+    assert chunk.embedding_text == f"# file: pkg/mod.py\n{chunk.text}"
+    # Stored/displayed text stays path-free.
+    assert not chunk.text.startswith("# file:")
+
+
 def test_metadata_text_is_truncated_to_pinecone_limit() -> None:
     huge = "\n".join("a" * 200 for _ in range(500))
     chunk = chunk_code(huge, "huge.py", chunk_size=500, overlap=0)[0]

@@ -63,6 +63,27 @@ def test_invalid_integer_environment_variable_raises(monkeypatch: pytest.MonkeyP
         get_settings()
 
 
+def test_run_limits_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAX_LLM_CALLS", "7")
+    monkeypatch.setenv("MAX_TOOL_CALLS", "2")
+    reset_settings_cache()
+    settings = get_settings()
+    assert settings.max_llm_calls == 7
+    assert settings.max_tool_calls == 2
+
+
+def test_max_output_tokens_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NVIDIA_MAX_TOKENS", "321")
+    reset_settings_cache()
+    assert get_settings().max_output_tokens == 321
+
+
+def test_chat_timeout_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NVIDIA_TIMEOUT_SECONDS", "12")
+    reset_settings_cache()
+    assert get_settings().chat_timeout_seconds == 12
+
+
 def test_litellm_model_ids_use_nvidia_nim_prefix(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     assert settings.litellm_chat_model == "nvidia_nim/meta/llama-3.2-11b-vision-instruct"

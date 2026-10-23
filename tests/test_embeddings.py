@@ -176,6 +176,22 @@ def test_embed_query_rejects_empty_string(settings: Settings) -> None:
         client.embed_query("   ")
 
 
+def test_embed_query_is_cached_per_client(settings: Settings, monkeypatch) -> None:
+    """Repeating a query must not repeat the network call."""
+    calls = {"n": 0}
+
+    def fake_embedding(**kwargs):
+        calls["n"] += 1
+        return _response([[0.25] * 4 for _ in kwargs["input"]])
+
+    monkeypatch.setattr(embeddings_module.litellm, "embedding", fake_embedding)
+    client = EmbeddingClient(replace(settings, embedding_dimension=4))
+    first = client.embed_query("where is upsert")
+    second = client.embed_query("where is upsert")
+    assert first == second
+    assert calls["n"] == 1
+
+
 def test_module_level_helpers_delegate(settings: Settings, monkeypatch) -> None:
     monkeypatch.setattr(
         embeddings_module.litellm,

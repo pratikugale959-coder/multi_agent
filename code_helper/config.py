@@ -57,6 +57,10 @@ DEFAULT_EMBEDDING_DIMENSION: int = 2048
 DEFAULT_CHUNK_SIZE: int = 100
 DEFAULT_CHUNK_OVERLAP: int = 20
 DEFAULT_TOP_K: int = 5
+DEFAULT_MAX_LLM_CALLS: int = 10
+DEFAULT_MAX_TOOL_CALLS: int = 3
+DEFAULT_MAX_OUTPUT_TOKENS: int = 800
+DEFAULT_CHAT_TIMEOUT_SECONDS: int = 60
 
 #: Required credentials. Listed here so validation and error messages agree.
 REQUIRED_NVIDIA_VARS = ("NVIDIA_API_KEY",)
@@ -141,6 +145,10 @@ class Settings:
     chunk_size: int
     chunk_overlap: int
     top_k: int
+    max_llm_calls: int = DEFAULT_MAX_LLM_CALLS
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    chat_timeout_seconds: int = DEFAULT_CHAT_TIMEOUT_SECONDS
 
     # -- convenience -------------------------------------------------------- #
     @property
@@ -190,6 +198,10 @@ def _build_settings() -> Settings:
         chunk_size=_as_int("CHUNK_SIZE", DEFAULT_CHUNK_SIZE),
         chunk_overlap=_as_int("CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP),
         top_k=_as_int("TOP_K", DEFAULT_TOP_K),
+        max_llm_calls=_as_int("MAX_LLM_CALLS", DEFAULT_MAX_LLM_CALLS),
+        max_tool_calls=_as_int("MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS),
+        max_output_tokens=_as_int("NVIDIA_MAX_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
+        chat_timeout_seconds=_as_int("NVIDIA_TIMEOUT_SECONDS", DEFAULT_CHAT_TIMEOUT_SECONDS),
     )
 
 
@@ -253,18 +265,65 @@ def get_chat_model():
 
     The returned object is cached: every agent receives the exact same instance,
     satisfying the "share one chat-model configuration" requirement.
+
+    The model is wrapped with a hard wall-clock timeout. LiteLLM's own
+    ``timeout`` is not reliably forwarded by every provider adapter (the NVIDIA
+    NIM path was observed waiting for its default 60 s), so the bound is applied
+    with :func:`asyncio.wait_for` around each generation step.
     """
+    import asyncio
+    from collections.abc import AsyncGenerator
+    from typing import Any
+
     from google.adk.models.lite_llm import LiteLlm
+    from pydantic import PrivateAttr
+
+    class TimeoutLiteLlm(LiteLlm):
+        """LiteLlm that cancels a generation step after a fixed number of seconds."""
+
+        _timeout_seconds: float = PrivateAttr(default=DEFAULT_CHAT_TIMEOUT_SECONDS)
+
+        def __init__(self, *, timeout_seconds: float = DEFAULT_CHAT_TIMEOUT_SECONDS, **kwargs: Any):
+            super().__init__(**kwargs)
+            self._timeout_seconds = float(timeout_seconds)
+
+        async def generate_content_async(
+            self, llm_request: Any, stream: bool = False
+        ) -> AsyncGenerator[Any, None]:
+            source = super().generate_content_async(llm_request, stream=stream)
+            try:
+                while True:
+                    try:
+                        item = await asyncio.wait_for(
+                            source.__anext__(), timeout=self._timeout_seconds
+                        )
+                    except StopAsyncIteration:
+                        return
+                    yield item
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Model request exceeded {self._timeout_seconds:.0f}s. "
+                    "Raise NVIDIA_TIMEOUT_SECONDS or retry."
+                ) from exc
+            finally:
+                await source.aclose()
 
     settings = get_settings()
     # Pass the key/base explicitly. This keeps behaviour deterministic even if
     # the environment is mutated later, and avoids relying on implicit lookup.
-    kwargs: dict[str, str] = {"model": settings.litellm_chat_model}
+    kwargs: dict[str, object] = {"model": settings.litellm_chat_model}
     if settings.nvidia_api_key:
         kwargs["api_key"] = settings.nvidia_api_key
     if settings.nvidia_base_url:
         kwargs["api_base"] = settings.nvidia_base_url
-    return LiteLlm(**kwargs)
+    # Bound generation length: latency grows with output tokens, and the
+    # worker instructions ask for short, cited answers rather than essays.
+    kwargs["max_tokens"] = settings.max_output_tokens
+    # One attempt keeps worst-case latency predictable; the embedding stage
+    # keeps its own retry policy.
+    kwargs["timeout"] = settings.chat_timeout_seconds
+    kwargs["num_retries"] = 0
+    return TimeoutLiteLlm(timeout_seconds=settings.chat_timeout_seconds, **kwargs)
 
 
 def describe_configuration() -> dict[str, object]:
@@ -290,4 +349,8 @@ def describe_configuration() -> dict[str, object]:
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "top_k": settings.top_k,
+        "max_llm_calls": settings.max_llm_calls,
+        "max_tool_calls": settings.max_tool_calls,
+        "max_output_tokens": settings.max_output_tokens,
+        "chat_timeout_seconds": settings.chat_timeout_seconds,
     }

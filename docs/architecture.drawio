@@ -34,7 +34,7 @@
         <mxCell id="web" value="ADK Web UI&#10;(adk web)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
           <mxGeometry x="460" y="125" width="300" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="tests" value="Pytest suite&#10;(118 offline tests)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
+        <mxCell id="tests" value="Pytest suite&#10;(146 offline tests)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
           <mxGeometry x="790" y="125" width="300" height="45" as="geometry" />
         </mxCell>
         <mxCell id="scripts" value="Integration scripts&#10;(scripts/*.py — need live keys)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">

@@ -65,6 +65,17 @@ class Chunk:
             "text": self.text[:MAX_METADATA_TEXT_CHARS],
         }
 
+    @property
+    def embedding_text(self) -> str:
+        """Text sent to the embedding model for this chunk.
+
+        The relative path is prepended so a query that names a file or module
+        (``main.py``, ``vector_store``) is drawn to that file's own chunks, not
+        only to chunks whose body happens to contain the word. The stored
+        ``text`` and displayed snippets stay path-free.
+        """
+        return f"# file: {self.file_path}\n{self.text}"
+
 
 def chunk_code(
     text: str,

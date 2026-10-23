@@ -34,13 +34,17 @@ def test_index_repository_orchestrates_all_stages(
     assert chunks[0].chunk_id.startswith(chunks[0].file_path + ":")
 
 
-def test_index_repository_uses_configured_embedding_model(
+def test_index_repository_embeds_file_path_with_each_chunk(
     sample_project: Path, settings: Settings, fake_embedder, fake_store
 ) -> None:
     index_repository(sample_project, settings=settings, embedder=fake_embedder, store=fake_store)
-    # The pipeline must hand every chunk text to the embedder exactly once.
+    # Every chunk is embedded exactly once, with its relative path prepended.
+    chunks = fake_store.upserts[0][0]
     embedded_texts = [t for batch in fake_embedder.document_batches for t in batch]
-    assert len(embedded_texts) == len(fake_store.upserts[0][0])
+    assert len(embedded_texts) == len(chunks)
+    for chunk, embedded in zip(chunks, embedded_texts, strict=True):
+        assert embedded.startswith(f"# file: {chunk.file_path}\n")
+        assert chunk.text in embedded
 
 
 def test_index_repository_handles_empty_project(

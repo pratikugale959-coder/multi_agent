@@ -108,13 +108,16 @@ def _index_of(item: Any) -> int:
 class EmbeddingClient:
     """Thin wrapper around ``litellm.embedding`` for NVIDIA NIM.
 
-    The instance is stateless apart from configuration, so it is safe to share.
+    Its only mutable state is a small query-embedding memo, so it remains safe
+    to share across callers.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.model = self.settings.litellm_embed_model
         self.expected_dimension = self.settings.embedding_dimension
+        # Small per-instance memo so a repeated query skips the network call.
+        self._query_cache: dict[str, tuple[float, ...]] = {}
 
     # -- public API --------------------------------------------------------- #
     def embed_documents(
@@ -136,12 +139,22 @@ class EmbeddingClient:
     def embed_query(self, text: str) -> list[float]:
         """Embed a single search query.
 
+        Results are memoised per client instance, so asking the same question
+        twice (a common UI retry) skips the network round trip.
+
         Raises:
             ValueError: If *text* is empty or whitespace.
         """
         if not isinstance(text, str) or text.strip() == "":
             raise ValueError("Query text must be a non-empty string")
-        return self._embed_batch([text])[0]
+
+        cached = self._query_cache.get(text)
+        if cached is None:
+            cached = tuple(self._embed_batch([text])[0])
+            if len(self._query_cache) >= 256:
+                self._query_cache.clear()
+            self._query_cache[text] = cached
+        return list(cached)
 
     def probe_dimension(self, sample: str = "dimension probe") -> int:
         """Return the actual embedding dimension from a single live call.

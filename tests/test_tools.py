@@ -77,6 +77,86 @@ def test_rag_search_formats_matches(settings: Settings, patch_tool_settings, mon
     assert "40-95" in result
 
 
+def test_rag_search_rejects_unrelated_topic(
+    settings: Settings, patch_tool_settings, monkeypatch
+) -> None:
+    """A topic absent from the project must not return unrelated chunks.
+
+    Regression: "Where is the Kubernetes deployment configured?" used to return
+    main.py/config.py and invite the model to speculate.
+    """
+    from code_helper.retrieval import RetrievedChunk
+
+    patch_tool_settings(settings)
+    monkeypatch.setattr(
+        search_tools,
+        "retrieve",
+        lambda *a, **k: [
+            RetrievedChunk("a", "main.py", 1, 66, 0.72, "import argparse\n"),
+            RetrievedChunk("b", "config.py", 1, 78, 0.71, "import os\n"),
+        ],
+    )
+    result = rag_search("Where is the Kubernetes deployment configured?")
+    assert "No relevant evidence" in result
+    assert "do NOT speculate" in result
+
+
+def test_rag_search_keeps_lexically_supported_results(
+    settings: Settings, patch_tool_settings, monkeypatch
+) -> None:
+    from code_helper.retrieval import RetrievedChunk
+
+    patch_tool_settings(settings)
+    monkeypatch.setattr(
+        search_tools,
+        "retrieve",
+        lambda *a, **k: [
+            RetrievedChunk("id", "vector_store.py", 40, 95, 0.9, "def cosine_similarity(a, b): ...")
+        ],
+    )
+    result = rag_search("where is cosine similarity calculated")
+    assert "vector_store.py" in result
+    assert "No relevant evidence" not in result
+
+
+def test_rag_search_exact_filename_reads_the_named_file(
+    settings: Settings, patch_tool_settings, monkeypatch
+) -> None:
+    """A named file is read directly, never left to top-k similarity."""
+    patch_tool_settings(settings)
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("semantic retrieval must be skipped for a named file")
+
+    monkeypatch.setattr(search_tools, "retrieve", must_not_run)
+    result = rag_search("where is alpha.py")
+    assert "Exact file match" in result
+    assert "alpha.py" in result
+    assert "def hello" in result
+
+
+def test_rag_search_reports_named_file_not_found(
+    settings: Settings, patch_tool_settings, monkeypatch
+) -> None:
+    patch_tool_settings(settings)
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("semantic retrieval must be skipped for a named file")
+
+    monkeypatch.setattr(search_tools, "retrieve", must_not_run)
+    result = rag_search("where is main.py")
+    assert "No readable file named" in result
+    assert "Do NOT infer" in result
+
+
+def test_rag_search_named_file_cannot_escape_project(
+    settings: Settings, patch_tool_settings
+) -> None:
+    patch_tool_settings(settings)
+    result = rag_search("where is ../../secret.py")
+    assert "No readable file named" in result
+
+
 def test_rag_search_handles_config_error(
     settings: Settings, patch_tool_settings, monkeypatch
 ) -> None:

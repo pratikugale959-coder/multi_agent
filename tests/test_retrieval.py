@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from code_helper.config import Settings
@@ -84,3 +86,14 @@ def test_answer_question_without_evidence(settings: Settings, fake_embedder, fak
     payload = answer_question("q", settings=settings, embedder=fake_embedder, store=fake_store)
     assert payload["has_evidence"] is False
     assert payload["source_files"] == []
+
+
+def test_shared_clients_are_reused_for_same_settings(settings: Settings) -> None:
+    """A cached Pinecone handle avoids a multi-second control-plane lookup."""
+    from code_helper.retrieval import _shared_embedder, _shared_store
+
+    assert _shared_embedder(settings) is _shared_embedder(settings)
+    assert _shared_store(settings) is _shared_store(settings)
+    # Different settings must not share a client.
+    other = replace(settings, pinecone_index_name="another-index")
+    assert _shared_store(other) is not _shared_store(settings)

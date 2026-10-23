@@ -132,7 +132,7 @@ def index_repository(
     log(f"[2/4] Chunking complete (size={settings.chunk_size}, overlap={settings.chunk_overlap})")
 
     embedder = embedder or EmbeddingClient(settings)
-    texts = [chunk.text for chunk in chunks]
+    texts = [chunk.embedding_text for chunk in chunks]
     log(f"[3/4] Embedding {len(texts)} chunk(s) with {settings.litellm_embed_model}")
     vectors = embedder.embed_documents(texts, batch_size=embed_batch_size)
 
