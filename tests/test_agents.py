@@ -34,6 +34,13 @@ def test_coordinator_exists_and_is_named() -> None:
     assert root_agent.name == "coordinator"
 
 
+def test_agent_module_exposes_the_same_root_agent() -> None:
+    """``adk web`` only discovers directories that contain ``agent.py``."""
+    from code_helper.agent import root_agent as module_root_agent
+
+    assert module_root_agent is root_agent
+
+
 def test_coordinator_has_exactly_four_workers() -> None:
     assert len(root_agent.sub_agents) == 4
     assert {a.name for a in root_agent.sub_agents} == set(WORKER_NAMES)

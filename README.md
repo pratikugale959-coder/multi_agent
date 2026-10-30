@@ -30,7 +30,8 @@ The chat model is created once in `code_helper/core/config.py` and shared by all
 ```text
 demo/
 ├── code_helper/
-│   ├── __init__.py             # ADK root_agent discovery
+│   ├── __init__.py             # Package import entry point
+│   ├── agent.py                # ADK web/run root_agent entry point
 │   ├── core/
 │   │   ├── config.py           # Environment, settings and shared chat model
 │   │   └── paths.py            # Path-traversal protection
@@ -135,7 +136,7 @@ python scripts/run_agent_demo.py
 ```
 ## 8. Verification Results
 The README records these results from the project environment:
-- **Offline tests:** `python -m pytest` - **160 passed**. Tests are mocked and do not require keys or network access.
+- **Offline tests:** `python -m pytest` - **161 passed**. Tests are mocked and do not require keys or network access.
 - **NVIDIA NIM embeddings:** embedding model verified; vector dimension **2048**.
 - **Pinecone:** 6 chunks indexed after `--prune`; index dimension 2048 with cosine similarity. A test query about vector upsert ranked `vector_store.py` first.
 - **Filesystem MCP:** server exposed 14 tools; all 10 allow-listed read-only tools were present, and a project file was read through MCP.

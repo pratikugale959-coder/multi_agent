@@ -158,7 +158,8 @@ chat model.
 
 ### 6.2 Request lifecycle
 
-1. ADK loads `code_helper` and discovers `root_agent` from `__init__.py`.
+1. ADK loads `code_helper` and discovers `root_agent` from `agent.py` (used by
+   `adk web`) or from the package `__init__.py` (used by normal imports).
 2. `setup_invocation_limits` applies the run-level model-call cap.
 3. The coordinator chooses one worker and rewrites the request as a task.
 4. The worker calls its tool(s); limits are enforced before each tool and model call.
