@@ -7,6 +7,9 @@ litellm>=1.100.0
 # Vector database (serverless)
 pinecone>=6.0.0
 
+# HTTP client used by the optional NVIDIA reranker
+requests>=2.32.0
+
 # Filesystem MCP server (used by the Code Explainer worker and the MCP scripts)
 mcp>=1.24.0
 

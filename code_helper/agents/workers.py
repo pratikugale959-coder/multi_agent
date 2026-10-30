@@ -7,7 +7,7 @@ Each worker is a Google ADK ``Agent`` with a focused description and instruction
 Worker                 Tool(s)
 =====================  ==========================================================
 ``code_searcher``      ``rag_search`` (custom RAG retrieval)
-``code_explainer``     Filesystem MCP toolset + ``read_project_file``
+``code_explainer``     Filesystem MCP toolset + ``summarize_project_file`` + ``read_project_file``
 ``architecture_mapper`` ``list_project_files``, ``inspect_imports``
 ``onboarding_guide``   ``get_project_overview``
 =====================  ==========================================================
@@ -30,10 +30,11 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from code_helper.agents.callbacks import strip_reasoning
 from code_helper.config import get_chat_model, get_settings
 from code_helper.mcp_filesystem import filesystem_toolset_or_none
 from code_helper.tools.architecture_tools import inspect_imports, list_project_files
-from code_helper.tools.explain_tools import read_project_file
+from code_helper.tools.explain_tools import read_project_file, summarize_project_file
 from code_helper.tools.onboarding_tools import get_project_overview
 from code_helper.tools.search_tools import rag_search
 
@@ -193,12 +194,15 @@ WORKER_LIMITS: dict[str, Any] = {
     "disallow_transfer_to_peers": True,
     "before_tool_callback": enforce_tool_call_limit,
     "before_model_callback": enforce_model_call_limit,
+    "after_model_callback": strip_reasoning,
     "after_agent_callback": reset_invocation_state,
 }
 
 CODE_SEARCHER_INSTRUCTION = """You are the Code Searcher for a Python codebase.
 
-Your single job: find WHERE something is implemented.
+Your single job: find WHERE something is implemented. Write ONLY the final answer:
+never show your reasoning, analysis, tool deliberation, or lines such as
+"The user asks..." or "We need to...".
 
 Method:
 1. Call the `rag_search` tool once with a focused natural-language query. If the
@@ -206,7 +210,8 @@ Method:
    `rag_search` then performs an exact file lookup and returns that file.
 2. After `rag_search` returns, DO NOT call it again.
 3. Base every claim strictly on the returned blocks. If the tool reports an
-   "Exact file match", describe that file and its contents directly.
+   "Exact file match", answer with its relative path and a one-sentence purpose;
+   do NOT reproduce the file, and quote at most 5 relevant lines.
 4. If the requested file, function or symbol does not appear in ANY returned
    block, answer exactly: "Not found in the indexed code." Do not infer a file's
    existence or contents from imports in other files.
@@ -222,6 +227,10 @@ Method:
 CRITICAL RULE: Call `rag_search` at most once per query. Immediately provide your
 final textual answer once search results are returned. You do not explain designs
 or architecture in depth; that is another agent's job.
+
+FINAL REMINDER: Start your answer with the file path or "Not found in the indexed
+code." Never start with "User asks", "We need", "The user", or a plan. Do not
+paste a whole file.
 """
 
 CODE_EXPLAINER_INSTRUCTION = """You are the Code Explainer for a Python codebase.
@@ -229,20 +238,28 @@ CODE_EXPLAINER_INSTRUCTION = """You are the Code Explainer for a Python codebase
 Your single job: explain what a COMPLETE source file does.
 
 Method:
-1. Read the target file in full. Prefer the Filesystem MCP tools (`read_text_file` /
-   `read_file`, `list_directory`) restricted to the project root. If MCP is
-   unavailable, use the `read_project_file` tool.
+1. Call `summarize_project_file` first. It returns a compact AST outline with the
+   module docstring, imports, constants, classes, functions and line numbers. Use
+   that outline as your primary source.
 2. If the user did not name a file and no file is obvious from the question, ask
    which file they mean. Never read an arbitrary file just to produce an answer.
-3. Read the file at most once. Once the file content is retrieved, DO NOT call any more tools.
-4. Explain, in order: the module purpose, its imports and what they provide,
-   each class and function, the control flow, and how the file depends on others.
-5. Clearly separate what you OBSERVED in the file from anything you INFER.
-6. Never invent code and never claim to have read a file you did not read. If you
-   were only given a partial file, say which parts you saw.
+3. Only if the outline is incomplete or the user asks for line-level detail, read
+   the full file once. Prefer the Filesystem MCP tools (`read_text_file` /
+   `read_file`) restricted to the project root, or `read_project_file`.
+4. Do not call more than one outline tool and one full-file read. Once you have
+   enough information, DO NOT call any more tools.
+5. Explain, in order: the module purpose, its imports and what they provide, the
+   key classes and functions, the control flow, and how the file depends on
+   others. Keep the whole answer under 250 words: use short bullets, not tables,
+   and do not paste code blocks longer than three lines.
+6. Clearly separate what you OBSERVED from anything you INFER. Never invent code
+   and never claim to have read a file you did not read.
+7. HARD LIMIT: 250 words. Group related functions instead of describing every one
+   separately. Stop when the key points are covered.
 
 CRITICAL RULE: Do not make repetitive tool calls. Provide your full explanation
-directly in text once the file is read.
+directly in text once the outline is available. Start with the one-sentence
+purpose, and do not stop after a planning thought or a tool call.
 """
 
 ARCHITECTURE_MAPPER_INSTRUCTION = """You are the Architecture Mapper for a Python codebase.
@@ -311,8 +328,8 @@ def make_code_searcher() -> Agent:
 
 
 def make_code_explainer() -> Agent:
-    """Build the Code Explainer worker (full-file reading + explanation)."""
-    tools: list[object] = [read_project_file]
+    """Build the Code Explainer worker (compact outline, optional full read)."""
+    tools: list[object] = [summarize_project_file, read_project_file]
     toolset = filesystem_toolset_or_none()
     if toolset is not None:
         tools.insert(0, toolset)

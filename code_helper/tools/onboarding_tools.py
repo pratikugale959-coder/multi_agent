@@ -13,8 +13,8 @@ import re
 from pathlib import Path
 
 from code_helper.config import get_settings
-from code_helper.ingestion import discover_source_files
 from code_helper.paths import project_root
+from code_helper.rag.ingestion import discover_source_files
 
 ENTRY_POINT_NAMES = ("main.py", "__main__.py", "app.py", "cli.py", "run.py", "__init__.py")
 

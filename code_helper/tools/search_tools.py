@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import re
 
-from code_helper.chunking import chunk_code
 from code_helper.config import ConfigError, Settings, get_settings
-from code_helper.embeddings import EmbeddingError
-from code_helper.ingestion import IngestionError, read_source_file
 from code_helper.paths import project_root
-from code_helper.retrieval import RetrievedChunk, format_results, retrieve
-from code_helper.vector_store import VectorStoreError
+from code_helper.rag.chunking import chunk_code
+from code_helper.rag.embeddings import EmbeddingError
+from code_helper.rag.ingestion import IngestionError, read_source_file
+from code_helper.rag.retrieval import RetrievedChunk, format_results, retrieve
+from code_helper.rag.vector_store import VectorStoreError
 
 #: File extensions recognised when the user literally names a file in a query.
 _NAMED_FILE_RE = re.compile(
@@ -246,7 +246,9 @@ def rag_search(query: str, top_k: int = 5) -> str:
             found = list(dict.fromkeys(chunk.file_path for chunk in chunks))
             header = (
                 f"Exact file match for {query!r}: {', '.join(found)}.\n"
-                "This is a deterministic file lookup, not a semantic guess.\n\n"
+                "This is a deterministic file lookup, not a semantic guess.\n"
+                "Report the relative path and a one-sentence purpose. Do not paste "
+                "the file; quote at most 5 relevant lines.\n\n"
             )
             return header + format_results(chunks, snippet_chars=None)
         names = ", ".join(repr(name) for name in missing)

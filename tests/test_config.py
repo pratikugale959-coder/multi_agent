@@ -86,7 +86,7 @@ def test_chat_timeout_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_litellm_model_ids_use_nvidia_nim_prefix(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    assert settings.litellm_chat_model == "nvidia_nim/meta/llama-3.2-11b-vision-instruct"
+    assert settings.litellm_chat_model == "nvidia_nim/openai/gpt-oss-20b"
     assert settings.litellm_embed_model == "nvidia_nim/nvidia/nemotron-3-embed-1b"
 
 

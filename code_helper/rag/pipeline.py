@@ -5,11 +5,11 @@ This module wires the five stages together:
 ===  ==========================================  ==========================
 #    Stage                                       Module
 ===  ==========================================  ==========================
-1    Read source files                           :mod:`code_helper.ingestion`
-2    Split files into chunks                     :mod:`code_helper.chunking`
-3    Generate embeddings (NVIDIA NIM)            :mod:`code_helper.embeddings`
-4    Store vectors + metadata (Pinecone)         :mod:`code_helper.vector_store`
-5    Embed query and retrieve matches            :mod:`code_helper.retrieval`
+1    Read source files                           :mod:`code_helper.rag.ingestion`
+2    Split files into chunks                     :mod:`code_helper.rag.chunking`
+3    Generate embeddings (NVIDIA NIM)            :mod:`code_helper.rag.embeddings`
+4    Store vectors + metadata (Pinecone)         :mod:`code_helper.rag.vector_store`
+5    Embed query and retrieve matches            :mod:`code_helper.rag.retrieval`
 ===  ==========================================  ==========================
 
 Each stage lives in its own module; this file only coordinates them.
@@ -20,12 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from code_helper.chunking import Chunk, chunk_source_files
 from code_helper.config import Settings, get_settings
-from code_helper.embeddings import EmbeddingClient
-from code_helper.ingestion import discover_source_files, load_source_files
-from code_helper.retrieval import RetrievedChunk, format_results, retrieve
-from code_helper.vector_store import PineconeVectorStore
+from code_helper.rag.chunking import Chunk, chunk_source_files
+from code_helper.rag.embeddings import EmbeddingClient
+from code_helper.rag.ingestion import discover_source_files, load_source_files
+from code_helper.rag.retrieval import RetrievedChunk, format_results, retrieve
+from code_helper.rag.vector_store import PineconeVectorStore
 
 DEFAULT_EMBED_BATCH = 32
 
@@ -39,6 +39,7 @@ class IndexReport:
     files_skipped: int
     chunks_created: int
     chunks_indexed: int
+    chunks_pruned: int
     embedding_dimension: int
     index_name: str
     errors: list[str] = field(default_factory=list)
@@ -51,6 +52,7 @@ class IndexReport:
             "files_skipped": self.files_skipped,
             "chunks_created": self.chunks_created,
             "chunks_indexed": self.chunks_indexed,
+            "chunks_pruned": self.chunks_pruned,
             "embedding_dimension": self.embedding_dimension,
             "index_name": self.index_name,
             "errors": self.errors,
@@ -89,6 +91,7 @@ def index_repository(
     store: PineconeVectorStore | None = None,
     embed_batch_size: int = DEFAULT_EMBED_BATCH,
     progress: bool = False,
+    prune: bool = False,
 ) -> IndexReport:
     """Run stages 1-4 for every indexable file under *root*.
 
@@ -99,6 +102,8 @@ def index_repository(
         store: Optional vector-store override (tests inject a fake).
         embed_batch_size: Documents per embedding request.
         progress: Print progress lines.
+        prune: Delete vectors in the namespace that are not part of this run.
+            Explicit only: normal indexing never destroys data.
 
     Returns:
         An :class:`IndexReport` describing what happened.
@@ -120,6 +125,7 @@ def index_repository(
         files_skipped=skipped,
         chunks_created=len(chunks),
         chunks_indexed=0,
+        chunks_pruned=0,
         embedding_dimension=settings.embedding_dimension,
         index_name=settings.pinecone_index_name,
         errors=errors,
@@ -144,6 +150,16 @@ def index_repository(
     report.chunks_indexed = indexed
     if description.get("dimension"):
         report.embedding_dimension = int(description["dimension"])
+
+    if prune:
+        current_ids = {chunk.chunk_id for chunk in chunks}
+        try:
+            stale = sorted(set(store.list_vector_ids()) - current_ids)
+            report.chunks_pruned = store.delete_ids(stale)
+        except AttributeError:
+            report.errors.append("The configured vector store does not support pruning")
+        log(f"[prune] Removed {report.chunks_pruned} stale vector(s)")
+
     return report
 
 

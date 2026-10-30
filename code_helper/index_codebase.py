@@ -4,6 +4,7 @@ Usage (run from the directory that contains ``code_helper``)::
 
     python -m code_helper.index_codebase
     python -m code_helper.index_codebase --root target_project --progress
+    python -m code_helper.index_codebase --prune --progress
     python -m code_helper.index_codebase --stats
 
 This is the script a developer runs **once** before asking the agents questions,
@@ -17,8 +18,8 @@ import json
 import sys
 
 from code_helper.config import ConfigError, get_settings
-from code_helper.rag_pipeline import index_repository
-from code_helper.vector_store import PineconeVectorStore, VectorStoreError
+from code_helper.rag.pipeline import index_repository
+from code_helper.rag.vector_store import PineconeVectorStore, VectorStoreError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only print current index statistics; do not index anything.",
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="After indexing, delete vectors in the namespace that are no longer current. "
+        "Use only on a namespace dedicated to this target project.",
+    )
     return parser
 
 
@@ -64,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             root=args.root,
             settings=settings,
             progress=args.progress,
+            prune=args.prune,
         )
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)

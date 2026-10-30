@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from code_helper.chunking import Chunk
 from code_helper.config import ConfigError, Settings
-from code_helper.vector_store import PineconeVectorStore, VectorStoreError
+from code_helper.rag.chunking import Chunk
+from code_helper.rag.vector_store import PineconeVectorStore, VectorStoreError
 
 
 class FakeIndex:

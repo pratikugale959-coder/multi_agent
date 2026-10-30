@@ -8,13 +8,16 @@ score. Agents simply call :func:`retrieve` and render the result.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from code_helper.config import Settings, get_settings
-from code_helper.embeddings import EmbeddingClient
-from code_helper.vector_store import PineconeVectorStore
+from code_helper.config import ConfigError, Settings, get_settings
+from code_helper.rag.embeddings import EmbeddingClient
+from code_helper.rag.vector_store import PineconeVectorStore
+
+_log = logging.getLogger(__name__)
 
 #: How many characters of a chunk to show in a rendered result.
 SNIPPET_CHARS = 1200
@@ -115,14 +118,34 @@ def retrieve(
     embedder = embedder or _shared_embedder(settings)
     store = store or _shared_store(settings)
 
+    # Reranking benefits from a wider candidate pool than the final answer size.
+    # Keep the extra work bounded so a slow reranker cannot dominate latency.
+    rerank_enabled = bool(settings.rerank_model_id)
+    candidate_k = resolved_top_k
+    if rerank_enabled:
+        candidate_k = max(resolved_top_k, min(resolved_top_k * 3, 20))
+
     query_vector = embedder.embed_query(query)
-    matches = store.query(query_vector, top_k=resolved_top_k)
+    matches = store.query(query_vector, top_k=candidate_k)
 
     results: list[RetrievedChunk] = []
     for match in matches:
         converted = _to_retrieved_chunk(match)
         if converted is not None:
             results.append(converted)
+
+    if rerank_enabled and results:
+        # Local import keeps the optional reranker out of the import graph for
+        # users who leave NVIDIA_RERANK_MODEL empty.
+        from code_helper.rag.reranker import RerankError, rerank
+
+        try:
+            results = rerank(query, results, top_n=resolved_top_k, settings=settings)
+        except (RerankError, ConfigError) as exc:
+            # Reranking is an enhancement, never a hard dependency: fall back to
+            # vector order when the endpoint is unavailable or misconfigured.
+            _log.warning("Reranking unavailable; using vector order instead: %s", exc)
+            results = results[:resolved_top_k]
     return results
 
 
@@ -147,7 +170,7 @@ def format_results(
     for rank, result in enumerate(shown, start=1):
         snippet = result.text if snippet_chars is None else result.text[:snippet_chars]
         lines.append(
-            f"[{rank}] {result.file_path} (lines {result.line_range}) similarity={result.score:.4f}"
+            f"[{rank}] {result.file_path} (lines {result.line_range}) score={result.score:.4f}"
         )
         lines.append("```python")
         lines.append(snippet)

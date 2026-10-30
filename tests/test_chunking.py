@@ -6,8 +6,8 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from code_helper.chunking import Chunk, ChunkingError, chunk_code, chunk_source_files
-from code_helper.ingestion import SourceFile
+from code_helper.rag.chunking import Chunk, ChunkingError, chunk_code, chunk_source_files
+from code_helper.rag.ingestion import SourceFile
 
 
 def _numbered_text(n: int) -> str:

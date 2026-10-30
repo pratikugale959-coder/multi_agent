@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from code_helper.config import Settings
-from code_helper.rag_pipeline import build_chunks, index_repository
+from code_helper.rag.pipeline import build_chunks, index_repository
 
 
 def test_build_chunks_reads_and_splits(sample_project: Path, settings: Settings) -> None:

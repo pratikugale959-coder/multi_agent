@@ -17,9 +17,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Model output can contain Unicode (for example a narrow no-break space). The
+# default Windows console encoding is cp1252, which raises UnicodeEncodeError
+# while printing. Reconfigure the streams instead of crashing the demo.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from google.genai import types  # noqa: E402
 
-from code_helper.agent import root_agent  # noqa: E402
+from code_helper.agents.callbacks import clean_answer  # noqa: E402
+from code_helper.agents.coordinator import root_agent  # noqa: E402
 
 APP_NAME = "code_helper"
 
@@ -60,9 +69,10 @@ async def ask(runner, question: str) -> None:
         if author not in authors:
             authors.append(author)
         text = _text_of(event)
-        if text:
-            final_answer = text
-            print(f"[{author}] {text[:500]}")
+        cleaned = clean_answer(text)
+        if cleaned:
+            final_answer = cleaned
+            print(f"[{author}] {cleaned[:500]}")
 
     print("-" * 78)
     print("ROUTING:", " -> ".join(authors))

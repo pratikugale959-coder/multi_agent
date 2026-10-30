@@ -49,6 +49,9 @@ _SAFE_ENV_KEYS = (
     "NODE_PATH",
 )
 
+_SAFE_ENV_KEYS_UPPER = frozenset(key.upper() for key in _SAFE_ENV_KEYS)
+"""Case-insensitive allow-list: Windows exports ``Path``/``ComSpec`` in mixed case."""
+
 #: Names that always indicate a secret and must never reach the child process.
 _SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 
@@ -79,7 +82,9 @@ def safe_subprocess_env(base_env: dict[str, str] | None = None) -> dict[str, str
     for key, value in env.items():
         if any(hint in key.upper() for hint in _SECRET_HINTS):
             continue
-        if key in _SAFE_ENV_KEYS:
+        # Windows environment keys are case-insensitive but not case-normalised
+        # (``Path`` and ``PATH`` both occur), so compare case-insensitively.
+        if key.upper() in _SAFE_ENV_KEYS_UPPER:
             safe[key] = value
     return safe
 

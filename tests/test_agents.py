@@ -15,8 +15,8 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
-from code_helper.agent import root_agent, setup_invocation_limits
-from code_helper.agents import (
+from code_helper.agents.coordinator import root_agent, setup_invocation_limits
+from code_helper.agents.workers import (
     _invocation_model_counts,
     _invocation_seen_calls,
     _invocation_tool_counts,
@@ -25,7 +25,7 @@ from code_helper.agents import (
     enforce_tool_call_limit,
     reset_invocation_state,
 )
-from code_helper.config import get_chat_model, get_settings
+from code_helper.config import TIMEOUT_FALLBACK_TEXT, get_chat_model, get_settings
 
 WORKER_NAMES = ["code_searcher", "code_explainer", "architecture_mapper", "onboarding_guide"]
 
@@ -72,6 +72,8 @@ def test_shared_model_bounds_latency() -> None:
     assert additional["max_tokens"] == settings.max_output_tokens
     assert additional["timeout"] == settings.chat_timeout_seconds
     assert additional["num_retries"] == 0
+    if settings.reasoning_effort:
+        assert additional["extra_body"] == {"reasoning_effort": settings.reasoning_effort}
     # The hard timeout is enforced at the ADK layer, not only by LiteLLM.
     assert model._timeout_seconds == settings.chat_timeout_seconds
 
@@ -91,15 +93,19 @@ def test_hard_timeout_cancels_a_slow_generation(monkeypatch: pytest.MonkeyPatch)
         contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
     )
 
-    async def consume() -> None:
-        async for _ in model.generate_content_async(request):
-            pass
+    async def consume() -> str:
+        chunks = []
+        async for item in model.generate_content_async(request):
+            for part in item.content.parts:
+                if part.text:
+                    chunks.append(part.text)
+        return "".join(chunks)
 
     try:
-        with pytest.raises(TimeoutError, match="exceeded"):
-            asyncio.run(consume())
+        text = asyncio.run(consume())
     finally:
         model._timeout_seconds = original
+    assert text == TIMEOUT_FALLBACK_TEXT
 
 
 def test_code_explainer_has_mcp_toolset_attached() -> None:

@@ -11,8 +11,11 @@ from __future__ import annotations
 from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.run_config import RunConfig
+from google.genai import types
 
-from code_helper.agents import build_worker_agents
+from code_helper.agents.callbacks import strip_reasoning
+from code_helper.agents.fast_path import fast_path_callback
+from code_helper.agents.workers import build_worker_agents
 from code_helper.config import get_chat_model, get_settings
 
 COORDINATOR_INSTRUCTION = """You are the coordinator (the "Boss") of a multi-agent code helper.
@@ -52,12 +55,17 @@ How to delegate:
 - Rewrite the user's request as a precise task for the chosen worker, naming the
   file or symbol when the user provided one.
 - Choose exactly one worker.
+- Do not narrate your reasoning or routing decision ("The user asks...",
+  "We need to transfer..."). Either delegate silently or return the final answer.
 - Once the worker answers, return its answer directly to the user, keeping the
   filenames, line ranges and citations intact. Do NOT re-delegate or call
   additional tools.
 - Do not add your own speculation or new technical claims.
 
 If a request is ambiguous, ask one short clarifying question instead of guessing.
+
+FINAL REMINDER: Never narrate routing or reasoning. Your visible message must be
+either a delegation call or the worker's final answer, nothing else.
 """
 
 
@@ -84,6 +92,16 @@ def setup_invocation_limits(callback_context: CallbackContext) -> None:
         invocation.run_config.max_llm_calls = min(invocation.run_config.max_llm_calls, limit)
 
 
+def prepare_agent(callback_context: CallbackContext) -> types.Content | None:
+    """Apply run limits and answer narrow deterministic questions immediately.
+
+    Returning content from ``before_agent_callback`` skips the coordinator's
+    model call, so a filename lookup still works when the hosted model is slow.
+    """
+    setup_invocation_limits(callback_context)
+    return fast_path_callback(callback_context)
+
+
 def _build_root_agent() -> Agent:
     """Construct the coordinator with its four workers attached."""
     return Agent(
@@ -96,7 +114,8 @@ def _build_root_agent() -> Agent:
         ),
         instruction=COORDINATOR_INSTRUCTION,
         sub_agents=build_worker_agents(),
-        before_agent_callback=setup_invocation_limits,
+        before_agent_callback=prepare_agent,
+        after_model_callback=strip_reasoning,
     )
 
 

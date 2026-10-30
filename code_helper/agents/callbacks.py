@@ -1,0 +1,132 @@
+"""Response hygiene callbacks for the worker agents.
+
+``openai/gpt-oss-20b`` is the only reliable tool-capable model currently served
+by the configured NVIDIA NIM endpoint. With tool results in the conversation it
+sometimes prefixes an otherwise correct answer with a line of private planning
+(``"We need to..."``, ``"User asks..."``). The instruction already forbids this,
+but a deterministic cleanup makes the user-visible answer stable.
+
+The callback only touches **final text** responses. Tool-call responses are left
+alone, and if stripping would remove the whole answer the original response is
+returned unchanged.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+#: Leading lines that are model planning, not part of the answer. Matching is
+#: case-insensitive and only applies at the start of the response.
+_REASONING_PREFIXES: tuple[str, ...] = (
+    "user asks",
+    "the user asks",
+    "the user asked",
+    "the user wants",
+    "the user is asking",
+    "according to routing",
+    "routing rules",
+    "we need",
+    "we should",
+    "we must",
+    "we cannot",
+    "we can",
+    "we got",
+    "we found",
+    "we see",
+    "we observe",
+    "we have",
+    "we will",
+    "need to",
+    "need ",
+    "let's",
+    "let me",
+    "i need",
+    "i should",
+    "i will",
+    "so we",
+    "so the",
+    "the tool returned",
+    "based on the tool",
+    "looking at",
+    "answer with",
+    "answer in",
+    "answer:",
+    "return ",
+    "respond with",
+    "reply with",
+    "provide ",
+    "state the",
+    "give the",
+    "output ",
+)
+
+
+def _clean_answer(text: str) -> str:
+    """Return the answer with leading planning lines removed (may be empty)."""
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        candidate = lines[index].strip().lower()
+        if not candidate:
+            index += 1
+            continue
+        if any(candidate.startswith(prefix) for prefix in _REASONING_PREFIXES):
+            index += 1
+            continue
+        break
+
+    return "\n".join(line.rstrip() for line in lines[index:]).strip()
+
+
+def _strip_leading_reasoning(text: str) -> str:
+    """Remove leading planning lines while preserving the actual answer."""
+    cleaned = _clean_answer(text)
+    return cleaned or text.strip()
+
+
+def clean_answer(text: str) -> str:
+    """Public helper: strip planning lines, returning ``""`` if none remain.
+
+    Callers that accumulate events (such as the live demo script) use this to
+    ignore a later planning-only event instead of overwriting a good answer.
+    """
+    return _clean_answer(text)
+
+
+def strip_reasoning(callback_context: Any, llm_response: Any) -> Any:
+    """ADK ``after_model_callback`` that removes a leading planning line.
+
+    Returns the modified response when something changed, otherwise ``None`` so
+    ADK keeps the original response untouched.
+    """
+    content = getattr(llm_response, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts:
+        return None
+
+    # A pure tool-call turn has no text and is left untouched. Mixed responses
+    # (a transfer call plus a short text part) still need their text sanitised.
+    text_parts = [
+        part
+        for part in parts
+        if getattr(part, "text", None) and not getattr(part, "thought", False)
+    ]
+    if not text_parts:
+        return None
+
+    # ADK may split one answer across several text parts (for example a short
+    # planning line followed by the answer). Sanitize the combined text so a
+    # part that is only planning does not survive on its own.
+    combined = ""
+    for index, part in enumerate(text_parts):
+        if index and not combined.endswith(("\n", " ")):
+            combined += "\n"
+        combined += part.text
+    cleaned = _strip_leading_reasoning(combined)
+    if cleaned == combined:
+        return None
+
+    text_parts[0].text = cleaned
+    for part in text_parts[1:]:
+        part.text = ""
+    return llm_response

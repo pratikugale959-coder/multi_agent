@@ -34,7 +34,7 @@
         <mxCell id="web" value="ADK Web UI&#10;(adk web)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
           <mxGeometry x="460" y="125" width="300" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="tests" value="Pytest suite&#10;(146 offline tests)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
+        <mxCell id="tests" value="Pytest suite&#10;(152 offline tests)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
           <mxGeometry x="790" y="125" width="300" height="45" as="geometry" />
         </mxCell>
         <mxCell id="scripts" value="Integration scripts&#10;(scripts/*.py — need live keys)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#94A3B8;fontColor=#334155;" vertex="1" parent="1">
@@ -47,7 +47,7 @@
         <mxCell id="w_search" value="code_searcher&#10;WHERE is X implemented? (RAG)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1E3A8A;" vertex="1" parent="1">
           <mxGeometry x="70" y="360" width="350" height="95" as="geometry" />
         </mxCell>
-        <mxCell id="w_explain" value="code_explainer&#10;Explain a whole source file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1E3A8A;" vertex="1" parent="1">
+        <mxCell id="w_explain" value="code_explainer&#10;Explain a whole source file (AST outline first)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1E3A8A;" vertex="1" parent="1">
           <mxGeometry x="450" y="360" width="350" height="95" as="geometry" />
         </mxCell>
         <mxCell id="w_arch" value="architecture_mapper&#10;Module deps, layout, entry points" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1E3A8A;" vertex="1" parent="1">
@@ -60,7 +60,7 @@
         <mxCell id="t_rag" value="rag_search&#10;custom RAG retrieval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#D79B00;fontColor=#7C2D12;" vertex="1" parent="1">
           <mxGeometry x="70" y="565" width="350" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="t_mcp" value="read_project_file + Filesystem MCP toolset&#10;(read-only allow-list)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#D79B00;fontColor=#7C2D12;" vertex="1" parent="1">
+        <mxCell id="t_mcp" value="summarize_project_file / read_project_file&#10;+ Filesystem MCP toolset (read-only allow-list)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#D79B00;fontColor=#7C2D12;" vertex="1" parent="1">
           <mxGeometry x="450" y="565" width="350" height="70" as="geometry" />
         </mxCell>
         <mxCell id="t_arch" value="list_project_files + inspect_imports&#10;(deterministic ast — no AI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#D79B00;fontColor=#7C2D12;" vertex="1" parent="1">
@@ -85,7 +85,7 @@
         <mxCell id="s5" value="5 · retrieval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=10;fontColor=#4C1D95;" vertex="1" parent="1">
           <mxGeometry x="748" y="760" width="150" height="65" as="geometry" />
         </mxCell>
-        <mxCell id="s6" value="6 · rag_pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=10;fontColor=#4C1D95;" vertex="1" parent="1">
+        <mxCell id="s6" value="6 · pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;fontSize=10;fontColor=#4C1D95;" vertex="1" parent="1">
           <mxGeometry x="920" y="760" width="150" height="65" as="geometry" />
         </mxCell>
 

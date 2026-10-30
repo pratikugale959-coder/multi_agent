@@ -3,7 +3,7 @@
 Each module holds the tools for one worker:
 
 * ``search_tools``       -> ``rag_search``                (Code Searcher)
-* ``explain_tools``      -> ``read_project_file``        (Code Explainer)
+* ``explain_tools``      -> ``summarize_project_file``, ``read_project_file`` (Code Explainer)
 * ``architecture_tools`` -> ``list_project_files``, ``inspect_imports``
 * ``onboarding_tools``   -> ``get_project_overview``     (Onboarding Guide)
 """

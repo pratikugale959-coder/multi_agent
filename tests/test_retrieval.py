@@ -7,8 +7,8 @@ from dataclasses import replace
 import pytest
 
 from code_helper.config import Settings
-from code_helper.rag_pipeline import answer_question
-from code_helper.retrieval import RetrievedChunk, format_results, retrieve
+from code_helper.rag.pipeline import answer_question
+from code_helper.rag.retrieval import RetrievedChunk, format_results, retrieve
 
 
 def _match(file_path: str, start: int, end: int, score: float, text: str = "print('hi')") -> dict:
@@ -90,7 +90,7 @@ def test_answer_question_without_evidence(settings: Settings, fake_embedder, fak
 
 def test_shared_clients_are_reused_for_same_settings(settings: Settings) -> None:
     """A cached Pinecone handle avoids a multi-second control-plane lookup."""
-    from code_helper.retrieval import _shared_embedder, _shared_store
+    from code_helper.rag.retrieval import _shared_embedder, _shared_store
 
     assert _shared_embedder(settings) is _shared_embedder(settings)
     assert _shared_store(settings) is _shared_store(settings)

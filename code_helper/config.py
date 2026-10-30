@@ -43,8 +43,11 @@ DEFAULT_TARGET_REPO: Path = PROJECT_ROOT / "target_project"
 # Model identifiers (verified against the installed NVIDIA NIM / LiteLLM API)
 # --------------------------------------------------------------------------- #
 # LiteLLM routes NVIDIA NIM models through the ``nvidia_nim`` provider and reads
-# the key from ``NVIDIA_NIM_API_KEY``. The assignment fixes these values.
-CHAT_MODEL_ID: str = "meta/llama-3.2-11b-vision-instruct"
+# the key from ``NVIDIA_NIM_API_KEY``. These defaults are deliberately
+# overridable: NVIDIA retires hosted models without notice, so the exact chat
+# model is configuration, not a hard-coded assumption. ``openai/gpt-oss-20b``
+# was the fastest tool-capable text model available when this default was set.
+CHAT_MODEL_ID: str = "openai/gpt-oss-20b"
 EMBED_MODEL_ID: str = "nvidia/nemotron-3-embed-1b"
 LITELLM_CHAT_MODEL: str = f"nvidia_nim/{CHAT_MODEL_ID}"
 LITELLM_EMBED_MODEL: str = f"nvidia_nim/{EMBED_MODEL_ID}"
@@ -60,7 +63,13 @@ DEFAULT_TOP_K: int = 5
 DEFAULT_MAX_LLM_CALLS: int = 10
 DEFAULT_MAX_TOOL_CALLS: int = 3
 DEFAULT_MAX_OUTPUT_TOKENS: int = 800
+
+TIMEOUT_FALLBACK_TEXT = (
+    "The model took too long to respond. Please retry, or ask a narrower "
+    "question (for a file explanation, try a smaller file)."
+)
 DEFAULT_CHAT_TIMEOUT_SECONDS: int = 60
+DEFAULT_REASONING_EFFORT: str = "low"
 
 #: Required credentials. Listed here so validation and error messages agree.
 REQUIRED_NVIDIA_VARS = ("NVIDIA_API_KEY",)
@@ -106,9 +115,14 @@ def load_environment(force: bool = False) -> None:
     load_dotenv()
 
     # LiteLLM's NVIDIA NIM provider looks for NVIDIA_NIM_API_KEY. Keep the two
-    # names in sync so either convention works.
-    if not os.getenv("NVIDIA_NIM_API_KEY") and os.getenv("NVIDIA_API_KEY"):
-        os.environ["NVIDIA_NIM_API_KEY"] = os.environ["NVIDIA_API_KEY"]
+    # names in sync, but prefer the documented NVIDIA_API_KEY so a placeholder
+    # left in NVIDIA_NIM_API_KEY cannot override a real key.
+    primary = os.getenv("NVIDIA_API_KEY", "").strip()
+    nim = os.getenv("NVIDIA_NIM_API_KEY", "").strip()
+    if primary:
+        os.environ["NVIDIA_NIM_API_KEY"] = primary
+    elif nim:
+        os.environ["NVIDIA_API_KEY"] = nim
 
     _ENV_LOADED = True
 
@@ -149,6 +163,11 @@ class Settings:
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     chat_timeout_seconds: int = DEFAULT_CHAT_TIMEOUT_SECONDS
+    #: Reasoning budget for models that support it (gpt-oss via NVIDIA NIM).
+    #: ``"low"`` keeps answers concise and interactive; empty disables the hint.
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    #: Optional cross-encoder reranker. Empty means "use vector order as-is".
+    rerank_model_id: str = ""
 
     # -- convenience -------------------------------------------------------- #
     @property
@@ -180,7 +199,7 @@ def _build_settings() -> Settings:
     target = Path(target_raw).expanduser().resolve() if target_raw else DEFAULT_TARGET_REPO
 
     nvidia_key = (
-        os.getenv("NVIDIA_NIM_API_KEY", "").strip() or os.getenv("NVIDIA_API_KEY", "").strip()
+        os.getenv("NVIDIA_API_KEY", "").strip() or os.getenv("NVIDIA_NIM_API_KEY", "").strip()
     )
 
     return Settings(
@@ -202,6 +221,8 @@ def _build_settings() -> Settings:
         max_tool_calls=_as_int("MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS),
         max_output_tokens=_as_int("NVIDIA_MAX_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
         chat_timeout_seconds=_as_int("NVIDIA_TIMEOUT_SECONDS", DEFAULT_CHAT_TIMEOUT_SECONDS),
+        reasoning_effort=os.getenv("NVIDIA_REASONING_EFFORT", DEFAULT_REASONING_EFFORT).strip(),
+        rerank_model_id=os.getenv("NVIDIA_RERANK_MODEL", "").strip(),
     )
 
 
@@ -300,13 +321,23 @@ def get_chat_model():
                     except StopAsyncIteration:
                         return
                     yield item
-            except TimeoutError as exc:
-                raise TimeoutError(
-                    f"Model request exceeded {self._timeout_seconds:.0f}s. "
-                    "Raise NVIDIA_TIMEOUT_SECONDS or retry."
-                ) from exc
+            except TimeoutError:
+                # A hard bound is still enforced, but the run ends with a
+                # readable answer instead of a traceback and an empty UI.
+                from google.adk.models.llm_response import LlmResponse
+                from google.genai import types
+
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=TIMEOUT_FALLBACK_TEXT)],
+                    )
+                )
             finally:
-                await source.aclose()
+                try:
+                    await source.aclose()
+                except Exception:  # pragma: no cover - best-effort cleanup
+                    pass
 
     settings = get_settings()
     # Pass the key/base explicitly. This keeps behaviour deterministic even if
@@ -323,6 +354,11 @@ def get_chat_model():
     # keeps its own retry policy.
     kwargs["timeout"] = settings.chat_timeout_seconds
     kwargs["num_retries"] = 0
+    # gpt-oss exposes a reasoning budget. "low" keeps simple tool-routing turns
+    # fast and stops the model from narrating its chain of thought. The hint is
+    # provider-specific, so it is configurable and omitted when empty.
+    if settings.reasoning_effort:
+        kwargs["extra_body"] = {"reasoning_effort": settings.reasoning_effort}
     return TimeoutLiteLlm(timeout_seconds=settings.chat_timeout_seconds, **kwargs)
 
 
@@ -337,6 +373,7 @@ def describe_configuration() -> dict[str, object]:
         "target_repo_path": str(settings.target_repo_path),
         "chat_model": settings.chat_model_id,
         "embed_model": settings.embed_model_id,
+        "rerank_model": settings.rerank_model_id or None,
         "litellm_chat_model": settings.litellm_chat_model,
         "litellm_embed_model": settings.litellm_embed_model,
         "nvidia_base_url": settings.nvidia_base_url,
@@ -353,4 +390,5 @@ def describe_configuration() -> dict[str, object]:
         "max_tool_calls": settings.max_tool_calls,
         "max_output_tokens": settings.max_output_tokens,
         "chat_timeout_seconds": settings.chat_timeout_seconds,
+        "reasoning_effort": settings.reasoning_effort or None,
     }

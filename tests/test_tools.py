@@ -11,8 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from google.genai import types
 
 from code_helper import tools as tools_pkg
+from code_helper.agents.fast_path import deterministic_answer, fast_path_callback
 from code_helper.config import ConfigError, Settings
 from code_helper.tools import search_tools
 from code_helper.tools.architecture_tools import (
@@ -20,7 +22,7 @@ from code_helper.tools.architecture_tools import (
     inspect_imports,
     list_project_files,
 )
-from code_helper.tools.explain_tools import read_project_file
+from code_helper.tools.explain_tools import read_project_file, summarize_project_file
 from code_helper.tools.onboarding_tools import get_project_overview
 from code_helper.tools.search_tools import rag_search
 
@@ -64,7 +66,7 @@ def test_rag_search_reports_no_evidence(
 
 
 def test_rag_search_formats_matches(settings: Settings, patch_tool_settings, monkeypatch) -> None:
-    from code_helper.retrieval import RetrievedChunk
+    from code_helper.rag.retrieval import RetrievedChunk
 
     patch_tool_settings(settings)
     monkeypatch.setattr(
@@ -85,7 +87,7 @@ def test_rag_search_rejects_unrelated_topic(
     Regression: "Where is the Kubernetes deployment configured?" used to return
     main.py/config.py and invite the model to speculate.
     """
-    from code_helper.retrieval import RetrievedChunk
+    from code_helper.rag.retrieval import RetrievedChunk
 
     patch_tool_settings(settings)
     monkeypatch.setattr(
@@ -104,7 +106,7 @@ def test_rag_search_rejects_unrelated_topic(
 def test_rag_search_keeps_lexically_supported_results(
     settings: Settings, patch_tool_settings, monkeypatch
 ) -> None:
-    from code_helper.retrieval import RetrievedChunk
+    from code_helper.rag.retrieval import RetrievedChunk
 
     patch_tool_settings(settings)
     monkeypatch.setattr(
@@ -195,6 +197,54 @@ def test_read_project_file_rejects_empty() -> None:
     assert "non-empty" in read_project_file("")
 
 
+def test_summarize_project_file_returns_compact_outline(
+    settings: Settings, patch_tool_settings
+) -> None:
+    patch_tool_settings(settings)
+    outline = summarize_project_file("alpha.py")
+    assert "File: alpha.py" in outline
+    assert "import os" in outline
+    assert "hello()" in outline
+    assert len(outline) < 1000
+
+
+def test_summarize_project_file_blocks_traversal(settings: Settings, patch_tool_settings) -> None:
+    patch_tool_settings(settings)
+    assert "Error" in summarize_project_file("../../secret.py")
+
+
+def test_fast_path_locates_named_file(settings: Settings) -> None:
+    answer = deterministic_answer("Where is alpha.py?", settings)
+    assert answer is not None
+    assert "alpha.py" in answer
+    assert "Path:" in answer
+
+
+def test_fast_path_summarizes_named_file(settings: Settings) -> None:
+    answer = deterministic_answer("What does alpha.py do?", settings)
+    assert answer is not None
+    assert "Definitions:" in answer
+    assert "hello()" in answer
+
+
+def test_fast_path_skips_mixed_or_unrelated_queries(settings: Settings) -> None:
+    assert deterministic_answer("Where is the Kubernetes deployment configured?", settings) is None
+    assert deterministic_answer("Where is alpha.py used?", settings) is None
+
+
+def test_fast_path_callback_returns_immediate_content(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("code_helper.agents.fast_path.get_settings", lambda: settings)
+
+    class Context:
+        user_content = types.Content(role="user", parts=[types.Part(text="Where is alpha.py?")])
+
+    result = fast_path_callback(Context())
+    assert result is not None
+    assert "alpha.py" in (result.parts[0].text or "")
+
+
 # --------------------------------------------------------------------------- #
 # list_project_files
 # --------------------------------------------------------------------------- #
@@ -279,6 +329,7 @@ def test_required_tool_signatures_are_minimal() -> None:
 
     assert list(inspect_module.signature(rag_search).parameters) == ["query", "top_k"]
     assert list(inspect_module.signature(read_project_file).parameters) == ["file_path"]
+    assert list(inspect_module.signature(summarize_project_file).parameters) == ["file_path"]
     assert list(inspect_module.signature(list_project_files).parameters) == []
     assert list(inspect_module.signature(inspect_imports).parameters) == ["file_path"]
     assert list(inspect_module.signature(get_project_overview).parameters) == []
@@ -302,7 +353,13 @@ def test_deterministic_tools_have_no_llm_dependency() -> None:
     """The architecture/onboarding/explain tools must not depend on an LLM."""
     import inspect as inspect_module
 
-    for func in (list_project_files, inspect_imports, read_project_file, get_project_overview):
+    for func in (
+        list_project_files,
+        inspect_imports,
+        read_project_file,
+        summarize_project_file,
+        get_project_overview,
+    ):
         module = inspect_module.getmodule(func)
         source = inspect_module.getsource(module)
         assert "litellm" not in source, f"{module.__name__} unexpectedly depends on litellm"

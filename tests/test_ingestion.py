@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from code_helper.ingestion import (
+from code_helper.rag.ingestion import (
     IngestionError,
     discover_source_files,
     is_excluded,

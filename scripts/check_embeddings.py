@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from code_helper.config import ConfigError, describe_configuration  # noqa: E402
-from code_helper.embeddings import EmbeddingClient, EmbeddingError  # noqa: E402
+from code_helper.rag.embeddings import EmbeddingClient, EmbeddingError  # noqa: E402
 
 
 def main() -> int:

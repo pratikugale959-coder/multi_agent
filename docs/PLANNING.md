@@ -142,11 +142,12 @@ Clients and entry points   adk run · adk web · scripts/
             |
 Agent layer (ADK)          coordinator -> one of four workers
             |
-Tool layer                 rag_search · read_project_file / Filesystem MCP
-                           list_project_files · inspect_imports · get_project_overview
+Tool layer                 rag_search · summarize_project_file / read_project_file
+                           / Filesystem MCP · list_project_files · inspect_imports
+                           · get_project_overview
             |
 RAG pipeline               ingestion -> chunking -> embeddings
-                           -> vector_store -> retrieval -> rag_pipeline
+                           -> vector_store -> retrieval -> pipeline
             |
 External services          NVIDIA NIM (chat + embeddings) · Pinecone · MCP server
 ```
@@ -176,17 +177,20 @@ Cross-cutting modules: `config.py` (typed settings), `paths.py` (path guard),
 |---|---|
 | `code_helper/config.py` | Load `.env`, build immutable `Settings`, share one chat model. |
 | `code_helper/paths.py` | Resolve paths inside the project root; reject traversal. |
-| `code_helper/ingestion.py` | Discover and read source files; skip caches, secrets, binaries, oversized files. |
-| `code_helper/chunking.py` | Line-window chunking, stable ids, vector metadata, embedding text. |
-| `code_helper/embeddings.py` | NVIDIA NIM embeddings with batching, retries and dimension checks. |
-| `code_helper/vector_store.py` | Pinecone serverless index; upsert and query; never delete. |
-| `code_helper/retrieval.py` | Embed the query, retrieve top-k, build `RetrievedChunk` objects, format output. |
-| `code_helper/rag_pipeline.py` | Orchestrate indexing and answer generation; `IndexReport`. |
-| `code_helper/index_codebase.py` | CLI: `--root`, `--progress`, `--stats`. |
+| `code_helper/rag/ingestion.py` | Discover and read source files; skip caches, secrets, binaries, oversized files. |
+| `code_helper/rag/chunking.py` | Line-window chunking, stable ids, vector metadata, embedding text. |
+| `code_helper/rag/embeddings.py` | NVIDIA NIM embeddings with batching, retries and dimension checks. |
+| `code_helper/rag/vector_store.py` | Pinecone serverless index; upsert, query, and explicit stale-vector pruning. |
+| `code_helper/rag/retrieval.py` | Embed the query, retrieve top-k, build `RetrievedChunk` objects, format output. |
+| `code_helper/rag/reranker.py` | Optional NVIDIA cross-encoder reranking; fail-open, disabled by default. |
+| `code_helper/rag/pipeline.py` | Orchestrate indexing and answer generation; `IndexReport`. |
+| `code_helper/index_codebase.py` | CLI: `--root`, `--progress`, `--stats`, `--prune`. |
 | `code_helper/mcp_filesystem.py` | Read-only Filesystem MCP toolset with a sanitised child environment. |
-| `code_helper/agent.py` | Coordinator (`root_agent`), routing instruction, run limits. |
-| `code_helper/agents.py` | Four workers, their instructions, per-agent call limits. |
-| `code_helper/tools/*.py` | The five custom tools exposed to the workers. |
+| `code_helper/agents/coordinator.py` | Coordinator (`root_agent`), routing instruction, run limits. |
+| `code_helper/agents/workers.py` | Four workers, their instructions, per-agent call limits. |
+| `code_helper/agents/callbacks.py` | Response hygiene: strip leading planning text from final answers. |
+| `code_helper/agents/fast_path.py` | Deterministic filename and whole-file outline answers before any model call. |
+| `code_helper/tools/*.py` | The custom tools exposed to the workers, including the AST outline helper. |
 
 ### 7.2 Agent graph
 
@@ -194,13 +198,13 @@ Cross-cutting modules: `config.py` (typed settings), `paths.py` (path guard),
 |---|---|---|---|---|
 | `coordinator` | root | Route to one worker; return its answer | none | routing only |
 | `code_searcher` | worker | Where is X implemented? | `rag_search` | yes |
-| `code_explainer` | worker | What does a whole file do? | Filesystem MCP + `read_project_file` | optional |
+| `code_explainer` | worker | What does a whole file do? | Filesystem MCP + `summarize_project_file`, `read_project_file` | optional |
 | `architecture_mapper` | worker | Imports, dependencies, entry points | `list_project_files`, `inspect_imports` | no |
 | `onboarding_guide` | worker | Purpose, setup, reading order | `get_project_overview` | no |
 
 Rules:
 
-- The coordinator has no tools, so it cannot answer directly.
+- The coordinator has no tools, so it cannot answer directly, except for the deterministic fast path for literal filename and whole-file outline questions.
 - Workers cannot transfer to peers or back to the coordinator.
 - Every worker has at least one tool; at least one tool uses no AI.
 
@@ -209,6 +213,7 @@ Rules:
 | Tool | Signature | Deterministic? | Source of truth |
 |---|---|---|---|
 | `rag_search` | `(query: str, top_k: int = 5) -> str` | mixed | Pinecone + exact file reads |
+| `summarize_project_file` | `(file_path: str) -> str` | yes | Python `ast` |
 | `read_project_file` | `(file_path: str) -> str` | yes | target filesystem |
 | `list_project_files` | `() -> str` | yes | target filesystem |
 | `inspect_imports` | `(file_path: str) -> str` | yes | Python `ast` |
@@ -236,12 +241,12 @@ internal arguments.
 
 | Stage | Module | Design |
 |---|---|---|
-| 1. Ingestion | `ingestion.py` | Walk the target; skip `.git`, virtual environments, caches, secrets, binaries and files over 1 MB. |
-| 2. Chunking | `chunking.py` | Line windows of 100 lines with 20 lines of overlap; stable ids `file:start-end`. |
-| 3. Embeddings | `embeddings.py` | `nvidia/nemotron-3-embed-1b`, batched, retried, dimension-validated (2048). |
-| 4. Storage | `vector_store.py` | Pinecone serverless, cosine, deterministic vector ids, metadata for provenance. |
-| 5. Retrieval | `retrieval.py` | Embed the query with the same model; return top-k with scores and formatting. |
-| 6. Orchestration | `rag_pipeline.py` | `index_repository()` (stages 1–4) and `answer_question()`; `IndexReport` summary. |
+| 1. Ingestion | `rag/ingestion.py` | Walk the target; skip `.git`, virtual environments, caches, secrets, binaries and files over 1 MB. |
+| 2. Chunking | `rag/chunking.py` | Line windows of 100 lines with 20 lines of overlap; stable ids `file:start-end`. |
+| 3. Embeddings | `rag/embeddings.py` | `nvidia/nemotron-3-embed-1b`, batched, retried, dimension-validated (2048). |
+| 4. Storage | `rag/vector_store.py` | Pinecone serverless, cosine, deterministic vector ids, metadata for provenance. |
+| 5. Retrieval | `rag/retrieval.py` | Embed the query with the same model; return top-k with scores and formatting. |
+| 6. Orchestration | `rag/pipeline.py` | `index_repository()` (stages 1–4) and `answer_question()`; `IndexReport` summary. |
 
 **Path-aware embedding.** Each chunk is embedded as:
 
@@ -271,7 +276,7 @@ rebuilt after changing this contract.
 `line_end`, `score`, `text`; `line_range` renders `start-end`.
 
 **`IndexReport`**: `root`, `files_discovered`, `files_skipped`, `chunks_created`,
-`chunks_indexed`, `embedding_dimension`, `index_name`, `errors`.
+`chunks_indexed`, `chunks_pruned`, `embedding_dimension`, `index_name`, `errors`.
 
 **Pinecone metadata keys:** `chunk_id`, `file_path`, `line_start`, `line_end`,
 `text`.
@@ -286,8 +291,9 @@ Embedding configuration is kept separate from chat configuration.
 | `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` | yes | Either name is accepted and kept in sync. |
 | `PINECONE_API_KEY` | yes | Required before any Pinecone call. |
 | `NVIDIA_BASE_URL` | no | `https://integrate.api.nvidia.com/v1` |
-| `NVIDIA_CHAT_MODEL` | no | `meta/llama-3.2-11b-vision-instruct` |
+| `NVIDIA_CHAT_MODEL` | no | `openai/gpt-oss-20b` |
 | `NVIDIA_EMBED_MODEL` | no | `nvidia/nemotron-3-embed-1b` |
+| `NVIDIA_RERANK_MODEL` | no | empty (disabled); optional cross-encoder model |
 | `PINECONE_INDEX_NAME` | no | `code-helper` |
 | `PINECONE_CLOUD` | no | `aws` |
 | `PINECONE_REGION` | no | `us-east-1` |
@@ -300,7 +306,8 @@ Embedding configuration is kept separate from chat configuration.
 | `MAX_LLM_CALLS` | no | `10` |
 | `MAX_TOOL_CALLS` | no | `3` |
 | `NVIDIA_MAX_TOKENS` | no | `800`; caps chat output length |
-| `NVIDIA_TIMEOUT_SECONDS` | no | `60`; bounds a stalled chat request |
+| `NVIDIA_REASONING_EFFORT` | no | `low`; sent via `extra_body` for gpt-oss |
+| `NVIDIA_TIMEOUT_SECONDS` | no | `60`; hard ADK-level bound on a stalled chat request |
 | `DISABLE_MCP_FILESYSTEM` | no | `0`; set to `1` to skip MCP and use the local reader |
 
 ### 7.7 Run limits and loop protection
@@ -331,7 +338,7 @@ Embedding configuration is kept separate from chat configuration.
 | # | Decision | Rationale | Alternative rejected |
 |---|---|---|---|
 | D1 | Coordinator plus four workers; workers cannot transfer | Routing stays one hop and answers stay attributable | Free-form hand-off caused confused meta-answers |
-| D2 | Coordinator has no tools | Forces every answer through a worker's evidence | A tool-using coordinator blurred responsibility |
+| D2 | Coordinator has no tools (besides the deterministic fast path) | Forces open-ended answers through a worker's evidence | A tool-using coordinator blurred responsibility |
 | D3 | Custom RAG, one module per stage | Makes each stage explicit and unit-testable | Frameworks hid the stages and added dependencies |
 | D4 | Deterministic `ast` tools | Imports and definitions are facts | Asking the model to infer imports was unreliable |
 | D5 | One shared chat model | Explicit requirement; one configuration point | Per-agent models risked inconsistent behaviour |
@@ -401,7 +408,7 @@ ruff format --check .
 | P5 | Retrieval and formatting | Top-k results carry file, line range and score. |
 | P6 | Pipeline orchestration and CLI | `index_repository` and `index_codebase` run end to end. |
 | P7 | Agents | Coordinator plus four workers construct and share one model. |
-| P8 | Tools | Five tools exist; the deterministic ones use no LLM. |
+| P8 | Tools | Five required tools plus the deterministic AST outline helper exist; the deterministic ones use no LLM. |
 | P9 | Filesystem MCP | Read-only toolset works with a confined root and sanitised env. |
 | P10 | Offline test suite | The full suite passes without keys or network. |
 | P11 | Live integration checks | Embeddings, Pinecone, MCP and routing verified against real services. |
@@ -450,7 +457,10 @@ on top, then verification and documentation.
 
 - **Chunking quality:** move from line windows to syntax-aware function/class chunks.
 - **Language coverage:** extend ingestion and `ast` analysis beyond Python.
-- **Reranking:** add a lightweight reranker after vector search.
+- **Reranking:** an optional cross-encoder reranker is implemented in
+  `rag/reranker.py` and fails open to vector order. It is disabled by default
+  because the hosted NVIDIA endpoint took over 40 s even for five short
+  passages; enable it with `NVIDIA_RERANK_MODEL` when latency allows.
 - **Evaluation harness:** build a small gold question/answer set to score retrieval.
 - **Caching:** reuse embeddings for unchanged files between indexing runs.
 - **Streaming:** stream final answers to reduce perceived latency.

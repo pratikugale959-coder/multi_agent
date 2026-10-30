@@ -19,8 +19,8 @@ from typing import Any
 
 from pinecone import Pinecone, ServerlessSpec
 
-from code_helper.chunking import Chunk
 from code_helper.config import Settings, get_settings, require_pinecone_credentials
+from code_helper.rag.chunking import Chunk
 
 DEFAULT_UPSERT_BATCH = 100
 INDEX_READY_TIMEOUT_SECONDS = 120
@@ -237,6 +237,65 @@ class PineconeVectorStore:
             "metric": self.metric,
             "index_name": self.index_name,
         }
+
+    # -- maintenance -------------------------------------------------------- #
+    def list_vector_ids(self, page_size: int = 100) -> list[str]:
+        """Return every vector id in the configured namespace.
+
+        Pinecone paginates large namespaces. ``list`` returns a ``ListResponse``
+        whose ``vectors`` items each carry an ``id``; older SDKs return a plain
+        iterable. Both shapes are handled here.
+        """
+        ids: list[str] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"namespace": self.namespace, "limit": page_size}
+            if token:
+                kwargs["pagination_token"] = token
+            try:
+                response = self.index.list(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                raise VectorStoreError(f"Could not list vector ids: {exc}") from exc
+
+            # Pinecone SDKs differ here: some return a ListResponse, some a
+            # generator of ListResponse pages, and older ones a list of items.
+            page_vectors = _attr(response, "vectors", None)
+            if page_vectors is not None:
+                pages = [response]
+            elif isinstance(response, (list, tuple)):
+                pages = list(response)
+            elif hasattr(response, "__iter__"):
+                pages = list(response)
+            else:
+                pages = [response]
+
+            for page in pages:
+                items = _attr(page, "vectors", None)
+                if items is None:
+                    items = [page]
+                for item in items:
+                    vector_id = _attr(item, "id", None)
+                    if vector_id:
+                        ids.append(str(vector_id))
+                pagination = _attr(page, "pagination", None)
+                token = _attr(pagination, "next", None) if pagination is not None else None
+
+            if not token:
+                return ids
+
+    def delete_ids(self, ids: Sequence[str]) -> int:
+        """Delete specific vector ids from the namespace. Returns the count.
+
+        Only used by the explicit ``--prune`` maintenance path; normal indexing
+        never destroys data.
+        """
+        if not ids:
+            return 0
+        try:
+            self.index.delete(ids=list(ids), namespace=self.namespace)
+        except Exception as exc:  # noqa: BLE001
+            raise VectorStoreError(f"Could not delete stale vectors: {exc}") from exc
+        return len(ids)
 
 
 def upsert_chunks(

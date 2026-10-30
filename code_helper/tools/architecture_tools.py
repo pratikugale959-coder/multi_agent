@@ -10,13 +10,13 @@ from __future__ import annotations
 import ast
 
 from code_helper.config import get_settings
-from code_helper.ingestion import (
+from code_helper.paths import PathSecurityError, project_root
+from code_helper.rag.ingestion import (
     DEFAULT_EXTENSIONS,
     IngestionError,
     discover_source_files,
     read_source_file,
 )
-from code_helper.paths import PathSecurityError, project_root
 
 
 def list_project_files() -> str:

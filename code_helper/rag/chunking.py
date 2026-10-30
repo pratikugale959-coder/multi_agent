@@ -153,7 +153,7 @@ def chunk_source_files(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[Chunk]:
-    """Chunk an iterable of :class:`~code_helper.ingestion.SourceFile` objects."""
+    """Chunk an iterable of :class:`~code_helper.rag.ingestion.SourceFile` objects."""
     chunks: list[Chunk] = []
     for source in sources:
         chunks.extend(

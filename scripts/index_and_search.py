@@ -19,9 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from code_helper.config import get_settings  # noqa: E402
-from code_helper.rag_pipeline import index_repository  # noqa: E402
-from code_helper.retrieval import retrieve  # noqa: E402
-from code_helper.vector_store import PineconeVectorStore  # noqa: E402
+from code_helper.rag.pipeline import index_repository  # noqa: E402
+from code_helper.rag.retrieval import retrieve  # noqa: E402
+from code_helper.rag.vector_store import PineconeVectorStore  # noqa: E402
 
 DEFAULT_QUERIES = [
     "Where is the upsert to the vector database implemented?",
@@ -35,12 +35,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--query", default="", help="A single custom question.")
     parser.add_argument("--progress", action="store_true")
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="Delete vectors in the namespace that are not part of this indexing run.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
     print(f"Target project: {settings.target_repo_path}")
 
-    report = index_repository(settings=settings, progress=args.progress)
+    report = index_repository(settings=settings, progress=args.progress, prune=args.prune)
     print(json.dumps(report.as_dict(), indent=2))
 
     store = PineconeVectorStore(settings)

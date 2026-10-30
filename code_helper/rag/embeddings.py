@@ -48,8 +48,8 @@ _RETRYABLE_NAME_HINTS = (
 _AUTH_NAME_HINTS = ("authentication", "permissiondenied", "unauthorized")
 
 DEFAULT_BATCH_SIZE = 32
-DEFAULT_MAX_RETRIES = 4
-DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_MAX_RETRIES = 1
+DEFAULT_TIMEOUT_SECONDS = 30.0
 
 
 class EmbeddingError(RuntimeError):

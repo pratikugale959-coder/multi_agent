@@ -24,7 +24,7 @@ def make_settings(target_repo: Path) -> Settings:
     return Settings(
         nvidia_api_key="test-nvidia-key",
         nvidia_base_url="https://example.invalid/v1",
-        chat_model_id="meta/llama-3.2-11b-vision-instruct",
+        chat_model_id="openai/gpt-oss-20b",
         embed_model_id="nvidia/nemotron-3-embed-1b",
         pinecone_api_key="test-pinecone-key",
         pinecone_index_name="code-helper",
