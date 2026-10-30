@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from code_helper.config import ConfigError, describe_configuration  # noqa: E402
+from code_helper.core.config import ConfigError, describe_configuration  # noqa: E402
 from code_helper.rag.embeddings import EmbeddingClient, EmbeddingError  # noqa: E402
 
 
@@ -29,7 +29,7 @@ def main() -> int:
     # Build the client without dimension validation so we can measure the truth.
     from dataclasses import replace
 
-    from code_helper.config import get_settings
+    from code_helper.core.config import get_settings
 
     settings = replace(get_settings(), embedding_dimension=0)
     client = EmbeddingClient(settings)

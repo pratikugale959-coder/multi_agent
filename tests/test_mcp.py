@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from code_helper.config import Settings
-from code_helper.mcp_filesystem import (
+from code_helper.core.config import Settings
+from code_helper.integrations.mcp_filesystem import (
     READ_ONLY_MCP_TOOLS,
     build_filesystem_toolset,
     describe_mcp_configuration,

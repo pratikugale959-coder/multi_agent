@@ -20,10 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from code_helper.config import Settings, get_settings
+from code_helper.core.config import Settings, get_settings
 from code_helper.rag.chunking import Chunk, chunk_source_files
 from code_helper.rag.embeddings import EmbeddingClient
-from code_helper.rag.ingestion import discover_source_files, load_source_files
+from code_helper.rag.ingestion import discover_source_files, read_source_files
 from code_helper.rag.retrieval import RetrievedChunk, format_results, retrieve
 from code_helper.rag.vector_store import PineconeVectorStore
 
@@ -62,26 +62,26 @@ class IndexReport:
 def build_chunks(
     root: str | Path,
     settings: Settings | None = None,
-) -> tuple[list[Chunk], int, list[str]]:
+) -> tuple[list[Chunk], int, int, list[str]]:
     """Stages 1-2: discover files and chunk them.
 
+    Discovery happens exactly once: the same path list is counted and read.
+
     Returns:
-        ``(chunks, files_skipped, errors)``.
+        ``(chunks, files_discovered, files_skipped, errors)``.
     """
     settings = settings or get_settings()
-    sources = load_source_files(root)
+    paths = discover_source_files(root)
+    sources, skipped = read_source_files(paths, root)
     chunks = chunk_source_files(
         sources,
         chunk_size=settings.chunk_size,
         overlap=settings.chunk_overlap,
     )
-    # Files skipped = supported files present but unreadable/binary.
-    discovered = len(discover_source_files(root))
-    skipped = max(0, discovered - len(sources))
     errors: list[str] = []
     if skipped:
         errors.append(f"{skipped} file(s) skipped (binary, undecodable or too large)")
-    return chunks, skipped, errors
+    return chunks, len(paths), skipped, errors
 
 
 def index_repository(
@@ -116,12 +116,12 @@ def index_repository(
             print(message)
 
     log(f"[1/4] Reading source files under {root_path}")
-    chunks, skipped, errors = build_chunks(root_path, settings)
+    chunks, discovered, skipped, errors = build_chunks(root_path, settings)
     log(f"      {len(chunks)} chunk(s) created from readable files")
 
     report = IndexReport(
         root=str(root_path),
-        files_discovered=len({chunk.file_path for chunk in chunks}),
+        files_discovered=discovered,
         files_skipped=skipped,
         chunks_created=len(chunks),
         chunks_indexed=0,

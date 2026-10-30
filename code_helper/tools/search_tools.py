@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import re
 
-from code_helper.config import ConfigError, Settings, get_settings
-from code_helper.paths import project_root
+from code_helper.core.config import ConfigError, Settings, get_settings
+from code_helper.core.paths import project_root
 from code_helper.rag.chunking import chunk_code
 from code_helper.rag.embeddings import EmbeddingError
 from code_helper.rag.ingestion import IngestionError, read_source_file
@@ -29,6 +29,11 @@ _NAMED_FILE_RE = re.compile(
     r"(?<![\w/.-])([\w./-]+\.(?:py|pyi|md|txt|toml|cfg|ini|json|ya?ml))(?![\w.])",
     re.IGNORECASE,
 )
+
+#: Named-file lookups are capped so a mixed question about a large file cannot
+#: flood the chat prompt. The outline tool remains the way to inspect a whole file.
+_EXACT_LOOKUP_MAX_CHUNKS = 4
+_EXACT_LOOKUP_SNIPPET_CHARS = 1500
 
 #: Common words ignored by the lexical relevance check below.
 _STOPWORDS = frozenset(
@@ -212,9 +217,10 @@ def rag_search(query: str, top_k: int = 5) -> str:
 
     Use this to locate where a function, feature, variable or operation is
     implemented. If the query names a file (e.g. ``main.py``), the file is read
-    directly and returned in full -- no semantic guessing. Results include the
-    source filename, line range and similarity score so the answer can be
-    traced back to real code.
+    directly instead of searched semantically. Named-file output is capped
+    (first few chunks, truncated snippets) so a large file cannot flood the
+    prompt. Results include the source filename and line range so the answer
+    can be traced back to real code.
 
     Args:
         query: A natural-language description of what to find.
@@ -244,13 +250,20 @@ def rag_search(query: str, top_k: int = 5) -> str:
         chunks, missing = exact
         if chunks:
             found = list(dict.fromkeys(chunk.file_path for chunk in chunks))
+            shown = chunks[:_EXACT_LOOKUP_MAX_CHUNKS]
             header = (
                 f"Exact file match for {query!r}: {', '.join(found)}.\n"
                 "This is a deterministic file lookup, not a semantic guess.\n"
                 "Report the relative path and a one-sentence purpose. Do not paste "
-                "the file; quote at most 5 relevant lines.\n\n"
+                "the file; quote at most 5 relevant lines.\n"
             )
-            return header + format_results(chunks, snippet_chars=None)
+            if len(shown) < len(chunks):
+                header += (
+                    f"Showing the first {len(shown)} of {len(chunks)} chunk(s); use "
+                    "summarize_project_file or read_project_file for the rest.\n"
+                )
+            header += "\n"
+            return header + format_results(shown, snippet_chars=_EXACT_LOOKUP_SNIPPET_CHARS)
         names = ", ".join(repr(name) for name in missing)
         return (
             f"No readable file named {names} was found under the project root "

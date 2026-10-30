@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from code_helper.config import ConfigError, Settings
+from code_helper.core.config import ConfigError, Settings
 from code_helper.rag import embeddings as embeddings_module
 from code_helper.rag.embeddings import EmbeddingClient, EmbeddingError, embed_documents, embed_query
 

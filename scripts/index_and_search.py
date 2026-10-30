@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from code_helper.config import get_settings  # noqa: E402
+from code_helper.core.config import get_settings  # noqa: E402
 from code_helper.rag.pipeline import index_repository  # noqa: E402
 from code_helper.rag.retrieval import retrieve  # noqa: E402
 from code_helper.rag.vector_store import PineconeVectorStore  # noqa: E402

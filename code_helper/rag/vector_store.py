@@ -7,8 +7,8 @@ Design notes
   mismatch raises a clear error instead of silently corrupting the index.
 * Vector ids are deterministic (``file:start-end``), so re-indexing the same file
   overwrites the same records instead of accumulating duplicates.
-* Deletion is not exposed by this module at all -- destroying data requires an
-  explicit, deliberate action outside the normal pipeline.
+* Deleting vectors is limited to the explicit :meth:`PineconeVectorStore.delete_ids`
+  maintenance helper used by ``--prune``. Normal indexing never destroys data.
 """
 
 from __future__ import annotations
@@ -19,10 +19,11 @@ from typing import Any
 
 from pinecone import Pinecone, ServerlessSpec
 
-from code_helper.config import Settings, get_settings, require_pinecone_credentials
+from code_helper.core.config import Settings, get_settings, require_pinecone_credentials
 from code_helper.rag.chunking import Chunk
 
 DEFAULT_UPSERT_BATCH = 100
+DEFAULT_DELETE_BATCH = 1000
 INDEX_READY_TIMEOUT_SECONDS = 120
 
 
@@ -135,7 +136,11 @@ class PineconeVectorStore:
         return description
 
     def _wait_until_ready(self, timeout: float = INDEX_READY_TIMEOUT_SECONDS) -> None:
-        """Block until the index reports ready (best effort)."""
+        """Block until the index reports ready, or raise on timeout.
+
+        A created index that never becomes ready would otherwise accept writes
+        that silently fail, so this fails loudly instead of returning.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -144,6 +149,10 @@ class PineconeVectorStore:
             except Exception:  # noqa: BLE001 - transient during provisioning
                 pass
             time.sleep(1.0)
+        raise VectorStoreError(
+            f"Pinecone index '{self.index_name}' did not become ready within "
+            f"{timeout:.0f} second(s)."
+        )
 
     # -- writes ------------------------------------------------------------- #
     def upsert_chunks(
@@ -156,6 +165,8 @@ class PineconeVectorStore:
 
         Chunks and vectors must be the same length and in the same order.
         """
+        if batch_size <= 0:
+            raise VectorStoreError(f"batch_size must be positive, got {batch_size}")
         if len(chunks) != len(vectors):
             raise VectorStoreError(
                 f"chunks ({len(chunks)}) and vectors ({len(vectors)}) must be the same length"
@@ -283,19 +294,25 @@ class PineconeVectorStore:
             if not token:
                 return ids
 
-    def delete_ids(self, ids: Sequence[str]) -> int:
+    def delete_ids(self, ids: Sequence[str], batch_size: int = DEFAULT_DELETE_BATCH) -> int:
         """Delete specific vector ids from the namespace. Returns the count.
 
         Only used by the explicit ``--prune`` maintenance path; normal indexing
-        never destroys data.
+        never destroys data. Large deletions are split into requests because
+        Pinecone caps the number of ids accepted per call.
         """
-        if not ids:
+        if batch_size <= 0:
+            raise VectorStoreError(f"batch_size must be positive, got {batch_size}")
+        id_list = [str(vector_id) for vector_id in ids]
+        if not id_list:
             return 0
-        try:
-            self.index.delete(ids=list(ids), namespace=self.namespace)
-        except Exception as exc:  # noqa: BLE001
-            raise VectorStoreError(f"Could not delete stale vectors: {exc}") from exc
-        return len(ids)
+        for start in range(0, len(id_list), batch_size):
+            batch = id_list[start : start + batch_size]
+            try:
+                self.index.delete(ids=batch, namespace=self.namespace)
+            except Exception as exc:  # noqa: BLE001
+                raise VectorStoreError(f"Could not delete stale vectors: {exc}") from exc
+        return len(id_list)
 
 
 def upsert_chunks(

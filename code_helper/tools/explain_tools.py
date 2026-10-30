@@ -15,9 +15,12 @@ from __future__ import annotations
 import ast
 from typing import Any
 
-from code_helper.config import get_settings
-from code_helper.paths import PathSecurityError, project_root
+from code_helper.core.config import get_settings
+from code_helper.core.paths import PathSecurityError, project_root
 from code_helper.rag.ingestion import IngestionError, read_source_file
+
+#: Bound the prompt size even when the ingestion layer accepts a large file.
+MAX_READ_CHARS = 40_000
 
 
 def _first_line(text: str | None) -> str:
@@ -158,19 +161,22 @@ def _outline_for_source(source: Any) -> str:
 
 
 def read_project_file(file_path: str) -> str:
-    """Read the full contents of a source file inside the target project.
+    """Read a source file inside the target project.
 
     Use this to explain a whole file: its imports, functions, classes and control
     flow. The path is validated against the project root, so path traversal and
-    secret files are rejected.
+    secret files are rejected. Very large files are truncated so they cannot
+    overflow the model's prompt; use ``summarize_project_file`` for a compact
+    outline first.
 
     Args:
         file_path: Path relative to the project root (e.g. ``"query_pipeline.py"``)
             or an absolute path that is still inside the project root.
 
     Returns:
-        The file contents, prefixed with a one-line header giving the relative
-        path and line count. Returns an explanatory error string on failure.
+        The file contents (capped at :data:`MAX_READ_CHARS`), prefixed with a
+        one-line header giving the relative path and line count. Returns an
+        explanatory error string on failure.
     """
     if not isinstance(file_path, str) or file_path.strip() == "":
         return "Error: read_project_file requires a non-empty file path."
@@ -185,4 +191,11 @@ def read_project_file(file_path: str) -> str:
         return f"Error: {exc}"
 
     header = f"File: {source.relative_path} ({source.line_count} lines)\n{'-' * 60}\n"
-    return header + source.text
+    if len(source.text) <= MAX_READ_CHARS:
+        return header + source.text
+    return (
+        header
+        + source.text[:MAX_READ_CHARS]
+        + f"\n\n[Truncated after {MAX_READ_CHARS} characters. "
+        "Use summarize_project_file for a compact outline of the rest.]"
+    )

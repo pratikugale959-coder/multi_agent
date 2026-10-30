@@ -22,8 +22,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from code_helper.config import get_settings
-from code_helper.paths import project_root
+from code_helper.core.config import get_settings
+from code_helper.core.paths import project_root
 
 #: Only these environment variables are passed to the npx subprocess.
 _SAFE_ENV_KEYS = (

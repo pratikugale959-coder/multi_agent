@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import ast
 
-from code_helper.config import get_settings
-from code_helper.paths import PathSecurityError, project_root
+from code_helper.core.config import get_settings
+from code_helper.core.paths import PathSecurityError, project_root
 from code_helper.rag.ingestion import (
     DEFAULT_EXTENSIONS,
     IngestionError,

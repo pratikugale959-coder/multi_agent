@@ -13,7 +13,7 @@ Worker                 Tool(s)
 =====================  ==========================================================
 
 All four share the *same* chat model instance returned by
-:func:`code_helper.config.get_chat_model`.
+:func:`code_helper.core.config.get_chat_model`.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from code_helper.agents.callbacks import strip_reasoning
-from code_helper.config import get_chat_model, get_settings
-from code_helper.mcp_filesystem import filesystem_toolset_or_none
+from code_helper.core.config import get_chat_model, get_settings
+from code_helper.integrations.mcp_filesystem import filesystem_toolset_or_none
 from code_helper.tools.architecture_tools import inspect_imports, list_project_files
 from code_helper.tools.explain_tools import read_project_file, summarize_project_file
 from code_helper.tools.onboarding_tools import get_project_overview

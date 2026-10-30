@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from code_helper.config import Settings, get_settings
+from code_helper.core.config import Settings, get_settings
 
 
 class PathSecurityError(ValueError):

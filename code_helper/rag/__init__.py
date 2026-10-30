@@ -10,6 +10,7 @@ from code_helper.rag.ingestion import (
     discover_source_files,
     load_source_files,
     read_source_file,
+    read_source_files,
 )
 from code_helper.rag.pipeline import IndexReport, answer_question, build_chunks, index_repository
 from code_helper.rag.retrieval import RetrievedChunk, format_results, retrieve
@@ -32,5 +33,6 @@ __all__ = [
     "index_repository",
     "load_source_files",
     "read_source_file",
+    "read_source_files",
     "retrieve",
 ]

@@ -31,8 +31,8 @@ from dotenv import load_dotenv
 # --------------------------------------------------------------------------- #
 # Paths
 # --------------------------------------------------------------------------- #
-PACKAGE_DIR: Path = Path(__file__).resolve().parent
-"""The ``code_helper`` package directory."""
+PACKAGE_DIR: Path = Path(__file__).resolve().parents[1]
+"""The ``code_helper`` package directory (this module lives in ``core/``)."""
 
 PROJECT_ROOT: Path = PACKAGE_DIR.parent
 """The directory that contains ``code_helper/`` and ``target_project/``."""

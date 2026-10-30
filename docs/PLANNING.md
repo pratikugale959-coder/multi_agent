@@ -152,8 +152,9 @@ RAG pipeline               ingestion -> chunking -> embeddings
 External services          NVIDIA NIM (chat + embeddings) · Pinecone · MCP server
 ```
 
-Cross-cutting modules: `config.py` (typed settings), `paths.py` (path guard),
-`mcp_filesystem.py` (read-only allow-list) and the shared chat model.
+Cross-cutting modules: `core/config.py` (typed settings), `core/paths.py` (path
+guard), `integrations/mcp_filesystem.py` (read-only allow-list) and the shared
+chat model.
 
 ### 6.2 Request lifecycle
 
@@ -175,8 +176,8 @@ Cross-cutting modules: `config.py` (typed settings), `paths.py` (path guard),
 
 | Module | Responsibility |
 |---|---|
-| `code_helper/config.py` | Load `.env`, build immutable `Settings`, share one chat model. |
-| `code_helper/paths.py` | Resolve paths inside the project root; reject traversal. |
+| `code_helper/core/config.py` | Load `.env`, build immutable `Settings`, share one chat model. |
+| `code_helper/core/paths.py` | Resolve paths inside the project root; reject traversal. |
 | `code_helper/rag/ingestion.py` | Discover and read source files; skip caches, secrets, binaries, oversized files. |
 | `code_helper/rag/chunking.py` | Line-window chunking, stable ids, vector metadata, embedding text. |
 | `code_helper/rag/embeddings.py` | NVIDIA NIM embeddings with batching, retries and dimension checks. |
@@ -185,7 +186,7 @@ Cross-cutting modules: `config.py` (typed settings), `paths.py` (path guard),
 | `code_helper/rag/reranker.py` | Optional NVIDIA cross-encoder reranking; fail-open, disabled by default. |
 | `code_helper/rag/pipeline.py` | Orchestrate indexing and answer generation; `IndexReport`. |
 | `code_helper/index_codebase.py` | CLI: `--root`, `--progress`, `--stats`, `--prune`. |
-| `code_helper/mcp_filesystem.py` | Read-only Filesystem MCP toolset with a sanitised child environment. |
+| `code_helper/integrations/mcp_filesystem.py` | Read-only Filesystem MCP toolset with a sanitised child environment. |
 | `code_helper/agents/coordinator.py` | Coordinator (`root_agent`), routing instruction, run limits. |
 | `code_helper/agents/workers.py` | Four workers, their instructions, per-agent call limits. |
 | `code_helper/agents/callbacks.py` | Response hygiene: strip leading planning text from final answers. |

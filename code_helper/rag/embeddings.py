@@ -6,7 +6,7 @@ through its ``nvidia_nim`` provider.
 
 Hard rules implemented here
 ---------------------------
-* A missing API key raises :class:`~code_helper.config.ConfigError` *before* the
+* A missing API key raises :class:`~code_helper.core.config.ConfigError` *before* the
   network call.
 * Transient failures (rate limit, timeout, 5xx) are retried with exponential
   backoff.
@@ -25,7 +25,7 @@ from typing import Any
 
 import litellm
 
-from code_helper.config import (
+from code_helper.core.config import (
     Settings,
     get_settings,
     require_nvidia_credentials,

@@ -20,8 +20,8 @@ from typing import Any
 
 from google.genai import types
 
-from code_helper.config import Settings, get_settings
-from code_helper.paths import project_root
+from code_helper.core.config import Settings, get_settings
+from code_helper.core.paths import project_root
 from code_helper.rag.ingestion import IngestionError, read_source_file
 from code_helper.tools.explain_tools import _outline_for_source
 from code_helper.tools.search_tools import _named_files

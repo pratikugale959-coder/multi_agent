@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from code_helper.config import ConfigError, Settings, get_settings
+from code_helper.core.config import ConfigError, Settings, get_settings
 from code_helper.rag.embeddings import EmbeddingClient
 from code_helper.rag.vector_store import PineconeVectorStore
 

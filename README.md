@@ -25,17 +25,22 @@ The coordinator has no tools of its own and delegates to one worker for open-end
 | Filesystem tools | Node.js / npx + `@modelcontextprotocol/server-filesystem` |
 | Environment | `python-dotenv` |
 | Tests | `pytest` 9.1.1 |
-The chat model is created once in `code_helper/config.py` and shared by all five agents. Embedding configuration is separate from chat configuration.
+The chat model is created once in `code_helper/core/config.py` and shared by all five agents. Embedding configuration is separate from chat configuration.
 ## 3. Project Layout
 ```text
 demo/
 ├── code_helper/
 │   ├── __init__.py             # ADK root_agent discovery
+│   ├── core/
+│   │   ├── config.py           # Environment, settings and shared chat model
+│   │   └── paths.py            # Path-traversal protection
 │   ├── agents/
 │   │   ├── callbacks.py        # Response hygiene (strip leading planning text)
 │   │   ├── fast_path.py        # Deterministic filename / outline answers
 │   │   ├── coordinator.py      # Coordinator ("Boss")
 │   │   └── workers.py          # Four specialist worker agents
+│   ├── integrations/
+│   │   └── mcp_filesystem.py   # Restricted, read-only Filesystem MCP
 │   ├── rag/
 │   │   ├── ingestion.py        # RAG: safe file discovery and reading
 │   │   ├── chunking.py         # Line-based chunking
@@ -44,16 +49,14 @@ demo/
 │   │   ├── retrieval.py        # Similarity retrieval and formatting
 │   │   ├── reranker.py         # Optional cross-encoder reranking
 │   │   └── pipeline.py         # RAG orchestration
-│   ├── config.py               # Environment and model configuration
-│   ├── index_codebase.py       # Indexing CLI (including --prune)
-│   ├── mcp_filesystem.py       # Restricted, read-only Filesystem MCP
-│   ├── paths.py                # Path-traversal protection
-│   └── tools/                  # Agent tool implementations
+│   ├── tools/                  # Agent tool implementations
+│   └── index_codebase.py       # Indexing CLI (including --prune)
 ├── target_project/              # Repository being analysed
 ├── tests/                       # Offline pytest suite
 ├── scripts/                     # Live integration checks
 ├── docs/                        # Architecture diagram and planning
-├── requirements.txt
+├── requirements.txt             # Runtime dependencies
+├── requirements-dev.txt         # Test and lint dependencies
 ├── pytest.ini
 ├── ruff.toml
 ├── .env.example
@@ -70,7 +73,7 @@ The custom RAG implementation does not use LangChain or LlamaIndex.
 | 4. Storage | `rag/vector_store.py` | Stores vectors and file/line/text metadata in Pinecone |
 | 5. Retrieval | `rag/retrieval.py` | Embeds the query with the same model and returns top-k results with source details |
 | 6. Orchestration | `rag/pipeline.py` | Coordinates indexing and answer generation |
-A literally named file (for example, "where is `main.py`?") is read directly rather than searched semantically, so it is always returned when it exists; a missing file is reported explicitly.
+A literally named file (for example, "where is `main.py`?") is read directly rather than searched semantically, so it is always returned when it exists; a missing file is reported explicitly. Named-file output is capped to the first few chunks so a large file cannot flood the prompt; `summarize_project_file` and `read_project_file` are used for deeper inspection.
 Default chunk size is **100 lines**, with **20 lines of overlap**. Configure these using `CHUNK_SIZE` and `CHUNK_OVERLAP`. Each chunk records its file, line range, stable ID, and original text. Each chunk is embedded with its relative path prepended (`# file: <path>`) so filename and module queries match the right file; re-run the indexer after changing this contract.
 **Chunking limitations:** chunks may begin mid-function or split long functions; overlap only partly mitigates this. Whitespace-heavy or repetitive files may produce low-information or similar chunks. Overlap also increases embedding cost and index size.
 ## 5. Agents and Tools
@@ -98,7 +101,8 @@ The `code_explainer` uses ADK's `McpToolset` and `StdioConnectionParams` to conn
 - NVIDIA NIM API key and Pinecone API key
 ### Install dependencies
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt        # runtime only
+pip install -r requirements-dev.txt    # adds pytest and ruff
 ```
 ### Configure environment
 Run from `demo/`:
@@ -131,7 +135,7 @@ python scripts/run_agent_demo.py
 ```
 ## 8. Verification Results
 The README records these results from the project environment:
-- **Offline tests:** `python -m pytest` - **152 passed**. Tests are mocked and do not require keys or network access.
+- **Offline tests:** `python -m pytest` - **160 passed**. Tests are mocked and do not require keys or network access.
 - **NVIDIA NIM embeddings:** embedding model verified; vector dimension **2048**.
 - **Pinecone:** 6 chunks indexed after `--prune`; index dimension 2048 with cosine similarity. A test query about vector upsert ranked `vector_store.py` first.
 - **Filesystem MCP:** server exposed 14 tools; all 10 allow-listed read-only tools were present, and a project file was read through MCP.

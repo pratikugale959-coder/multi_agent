@@ -24,7 +24,7 @@
         <mxCell id="extLayer" value="External Services &amp; Infrastructure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF2F2;strokeColor=#FCA5A5;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#7F1D1D;arcSize=3;" vertex="1" parent="1">
           <mxGeometry x="40" y="910" width="1520" height="150" as="geometry" />
         </mxCell>
-        <mxCell id="notes" value="Cross-cutting concerns:&#10;• config.py — typed Settings + fail-fast credential checks    • paths.py — path-containment guard    • mcp_filesystem.py — read-only tool allow-list + sanitised child env&#10;• All five agents share ONE chat model (get_chat_model()); embedding config is kept separate.    • target_project/ is the repository under analysis — the helper never indexes its own source." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEA;strokeColor=#D6B656;align=left;verticalAlign=middle;spacingLeft=12;spacingRight=12;fontSize=11;fontColor=#4D3800;" vertex="1" parent="1">
+        <mxCell id="notes" value="Cross-cutting concerns:&#10;• core/config.py — typed Settings + fail-fast credential checks    • core/paths.py — path-containment guard    • integrations/mcp_filesystem.py — read-only tool allow-list + sanitised child env&#10;• All five agents share ONE chat model (get_chat_model()); embedding config is kept separate.    • target_project/ is the repository under analysis — the helper never indexes its own source." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEA;strokeColor=#D6B656;align=left;verticalAlign=middle;spacingLeft=12;spacingRight=12;fontSize=11;fontColor=#4D3800;" vertex="1" parent="1">
           <mxGeometry x="40" y="1090" width="1520" height="70" as="geometry" />
         </mxCell>
 

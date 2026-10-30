@@ -17,7 +17,7 @@ import argparse
 import json
 import sys
 
-from code_helper.config import ConfigError, get_settings
+from code_helper.core.config import ConfigError, get_settings
 from code_helper.rag.pipeline import index_repository
 from code_helper.rag.vector_store import PineconeVectorStore, VectorStoreError
 

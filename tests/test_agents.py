@@ -25,7 +25,7 @@ from code_helper.agents.workers import (
     enforce_tool_call_limit,
     reset_invocation_state,
 )
-from code_helper.config import TIMEOUT_FALLBACK_TEXT, get_chat_model, get_settings
+from code_helper.core.config import TIMEOUT_FALLBACK_TEXT, get_chat_model, get_settings
 
 WORKER_NAMES = ["code_searcher", "code_explainer", "architecture_mapper", "onboarding_guide"]
 

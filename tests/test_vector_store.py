@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from code_helper.config import ConfigError, Settings
+from code_helper.core.config import ConfigError, Settings
 from code_helper.rag.chunking import Chunk
 from code_helper.rag.vector_store import PineconeVectorStore, VectorStoreError
 
@@ -15,10 +15,14 @@ from code_helper.rag.vector_store import PineconeVectorStore, VectorStoreError
 class FakeIndex:
     def __init__(self, matches=None) -> None:
         self.upserts: list[dict] = []
+        self.deletes: list[dict] = []
         self._matches = matches or []
 
     def upsert(self, vectors, namespace=""):
         self.upserts.append({"vectors": vectors, "namespace": namespace})
+
+    def delete(self, ids, namespace=""):
+        self.deletes.append({"ids": ids, "namespace": namespace})
 
     def query(self, vector=None, top_k=5, include_metadata=True, namespace="", filter=None):
         return SimpleNamespace(matches=self._matches[:top_k])
@@ -111,6 +115,27 @@ def test_upsert_rejects_wrong_vector_dimension(settings: Settings) -> None:
     chunk = Chunk("c1", "f.py", 1, 2, "text")
     with pytest.raises(VectorStoreError, match="dims"):
         store.upsert_chunks([chunk], [[0.0] * 8])
+
+
+def test_upsert_rejects_non_positive_batch_size(settings: Settings) -> None:
+    store = _store(settings, FakeClient(names=["code-helper"]), dimension=4)
+    chunk = Chunk("c1", "f.py", 1, 2, "text")
+    with pytest.raises(VectorStoreError, match="batch_size"):
+        store.upsert_chunks([chunk], [[0.0] * 4], batch_size=0)
+
+
+def test_wait_until_ready_raises_on_timeout(settings: Settings) -> None:
+    store = _store(settings, FakeClient(names=["code-helper"], ready=False))
+    with pytest.raises(VectorStoreError, match="did not become ready"):
+        store._wait_until_ready(timeout=0)
+
+
+def test_delete_ids_batches_requests(settings: Settings) -> None:
+    client = FakeClient(names=["code-helper"])
+    store = _store(settings, client)
+    deleted = store.delete_ids(["a", "b", "c"], batch_size=2)
+    assert deleted == 3
+    assert [call["ids"] for call in client.index_handle.deletes] == [["a", "b"], ["c"]]
 
 
 def test_upsert_payload_shape_and_deterministic_ids(settings: Settings) -> None:

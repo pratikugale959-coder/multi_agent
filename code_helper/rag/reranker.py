@@ -15,7 +15,7 @@ it cannot be wrapped by LiteLLM like the chat and embedding calls. A thin
 
 Failure behaviour
 -----------------
-* A missing API key raises :class:`~code_helper.config.ConfigError` before any
+* A missing API key raises :class:`~code_helper.core.config.ConfigError` before any
   network call.
 * HTTP errors and connection problems raise :class:`RerankError`.
 * When the reranker is disabled (``NVIDIA_RERANK_MODEL`` is unset or empty)
@@ -30,7 +30,7 @@ from typing import Any
 
 import requests
 
-from code_helper.config import Settings, get_settings, require_nvidia_credentials
+from code_helper.core.config import Settings, get_settings, require_nvidia_credentials
 from code_helper.rag.retrieval import RetrievedChunk
 
 _log = logging.getLogger(__name__)

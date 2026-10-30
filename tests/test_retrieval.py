@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from code_helper.config import Settings
+from code_helper.core.config import Settings
 from code_helper.rag.pipeline import answer_question
 from code_helper.rag.retrieval import RetrievedChunk, format_results, retrieve
 

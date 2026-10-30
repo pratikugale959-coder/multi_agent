@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from code_helper.config import Settings
+from code_helper.core.config import Settings
 from code_helper.rag.pipeline import build_chunks, index_repository
 
 
 def test_build_chunks_reads_and_splits(sample_project: Path, settings: Settings) -> None:
-    chunks, skipped, errors = build_chunks(sample_project, settings)
+    chunks, discovered, skipped, errors = build_chunks(sample_project, settings)
     files = {c.file_path for c in chunks}
     assert {"alpha.py", "beta.py", "big.py", "broken.py"} <= files
     # big.py is 171 lines -> two chunks at size 100 / overlap 20
     assert len([c for c in chunks if c.file_path == "big.py"]) == 2
-    assert skipped >= 1  # binary.py cannot be read
+    assert discovered == 5  # five .py files; binary.py is discovered but unreadable
+    assert skipped == 1
     assert errors
 
 
@@ -26,6 +27,8 @@ def test_index_repository_orchestrates_all_stages(
     )
     assert report.chunks_created > 0
     assert report.chunks_indexed == report.chunks_created
+    assert report.files_discovered == 5
+    assert report.files_skipped == 1
     assert fake_store.ensure_called is True
     assert len(fake_store.upserts) == 1
     chunks, vectors = fake_store.upserts[0]

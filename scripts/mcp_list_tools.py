@@ -8,8 +8,8 @@ It launches the official Filesystem MCP server through ``npx`` (requires Node.js
 and network access on first run), lists the tools the server actually exposes,
 checks that our read-only allow-list matches, and reads one file end to end.
 
-This confirms the tool names we filter on in ``code_helper/mcp_filesystem.py``
-are real, rather than guessed.
+This confirms the tool names we filter on in
+``code_helper/integrations/mcp_filesystem.py`` are real, rather than guessed.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from code_helper.config import get_settings  # noqa: E402
-from code_helper.mcp_filesystem import READ_ONLY_MCP_TOOLS, filesystem_server_params  # noqa: E402
+from code_helper.core.config import get_settings  # noqa: E402
+from code_helper.integrations.mcp_filesystem import READ_ONLY_MCP_TOOLS, filesystem_server_params  # noqa: E402
 
 
 async def inspect_server() -> int:

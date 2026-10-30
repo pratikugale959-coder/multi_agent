@@ -12,11 +12,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from code_helper.config import get_settings
-from code_helper.paths import project_root
+from code_helper.core.config import get_settings
+from code_helper.core.paths import project_root
 from code_helper.rag.ingestion import discover_source_files
 
-ENTRY_POINT_NAMES = ("main.py", "__main__.py", "app.py", "cli.py", "run.py", "__init__.py")
+ENTRY_POINT_NAMES = ("main.py", "__main__.py", "app.py", "cli.py", "run.py")
 
 COMMAND_PATTERN = re.compile(
     r"^\s*(?:[$>]\s*)?((?:python|py|pip|pip3|npx|adk|uvicorn|docker)\b[^\n`]*)$",

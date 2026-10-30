@@ -1,3 +1,6 @@
+# Runtime dependencies for the Multi-Agent Code Helper.
+# Test and lint tools live in requirements-dev.txt.
+
 # Core framework
 google-adk>=2.12.0
 
@@ -15,6 +18,3 @@ mcp>=1.24.0
 
 # Environment loading
 python-dotenv>=1.0.0
-
-# Testing
-pytest>=8.0.0

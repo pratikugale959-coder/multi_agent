@@ -199,6 +199,28 @@ def read_source_file(path: str | Path, root: str | Path) -> SourceFile:
     )
 
 
+def read_source_files(
+    paths: Iterable[Path],
+    root: str | Path,
+) -> tuple[list[SourceFile], int]:
+    """Read already-discovered *paths* under *root*.
+
+    Returns:
+        ``(sources, skipped)`` where *skipped* counts files that could not be
+        read (binary, undecodable, oversized or outside the root). A single bad
+        file never aborts the run.
+    """
+    root_path = Path(root).expanduser().resolve()
+    sources: list[SourceFile] = []
+    skipped = 0
+    for path in paths:
+        try:
+            sources.append(read_source_file(path, root_path))
+        except IngestionError:
+            skipped += 1
+    return sources, skipped
+
+
 def load_source_files(
     root: str | Path,
     extensions: Sequence[str] = DEFAULT_EXTENSIONS,
@@ -210,12 +232,9 @@ def load_source_files(
     indexing.
     """
     root_path = Path(root).expanduser().resolve()
-    sources: list[SourceFile] = []
-    for path in discover_source_files(root_path, extensions=extensions):
-        try:
-            sources.append(read_source_file(path, root_path))
-        except IngestionError:
-            continue
+    sources, _ = read_source_files(
+        discover_source_files(root_path, extensions=extensions), root_path
+    )
     return sources
 
 

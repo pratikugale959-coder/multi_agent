@@ -14,8 +14,9 @@ import pytest
 from google.genai import types
 
 from code_helper import tools as tools_pkg
+from code_helper.agents.callbacks import clean_answer
 from code_helper.agents.fast_path import deterministic_answer, fast_path_callback
-from code_helper.config import ConfigError, Settings
+from code_helper.core.config import ConfigError, Settings
 from code_helper.tools import search_tools
 from code_helper.tools.architecture_tools import (
     collect_definitions,
@@ -23,7 +24,7 @@ from code_helper.tools.architecture_tools import (
     list_project_files,
 )
 from code_helper.tools.explain_tools import read_project_file, summarize_project_file
-from code_helper.tools.onboarding_tools import get_project_overview
+from code_helper.tools.onboarding_tools import ENTRY_POINT_NAMES, get_project_overview
 from code_helper.tools.search_tools import rag_search
 
 
@@ -159,6 +160,19 @@ def test_rag_search_named_file_cannot_escape_project(
     assert "No readable file named" in result
 
 
+def test_rag_search_caps_named_file_output(settings: Settings, patch_tool_settings) -> None:
+    """A mixed question about a large file must not flood the prompt."""
+    patch_tool_settings(settings)
+    long_file = settings.target_repo_path / "long.py"
+    long_file.write_text(
+        "\n".join(f"value_{i} = {i}" for i in range(1, 701)),
+        encoding="utf-8",
+    )
+    result = rag_search("where is long.py used")
+    assert "Showing the first 4 of" in result
+    assert len(result) < 12_000
+
+
 def test_rag_search_handles_config_error(
     settings: Settings, patch_tool_settings, monkeypatch
 ) -> None:
@@ -195,6 +209,15 @@ def test_read_project_file_blocks_absolute_outside(
 
 def test_read_project_file_rejects_empty() -> None:
     assert "non-empty" in read_project_file("")
+
+
+def test_read_project_file_caps_very_large_files(settings: Settings, patch_tool_settings) -> None:
+    patch_tool_settings(settings)
+    huge = settings.target_repo_path / "huge.py"
+    huge.write_text("x = 1\n" * 12_000, encoding="utf-8")
+    result = read_project_file("huge.py")
+    assert "Truncated after" in result
+    assert len(result) < 41_000
 
 
 def test_summarize_project_file_returns_compact_outline(
@@ -319,6 +342,25 @@ def test_overview_reports_missing_readme(tmp_path: Path, patch_tool_settings) ->
     (root / "only.py").write_text("x = 1\n", encoding="utf-8")
     patch_tool_settings(make_settings(root))
     assert "no README.md found" in get_project_overview()
+
+
+def test_onboarding_excludes_package_init_from_entry_points() -> None:
+    """``__init__.py`` is package plumbing, not an application entry point."""
+    assert "__init__.py" not in ENTRY_POINT_NAMES
+
+
+# --------------------------------------------------------------------------- #
+# Response hygiene
+# --------------------------------------------------------------------------- #
+def test_clean_answer_strips_clear_planning_prefix() -> None:
+    text = "We need to check the tool result.\n\nThe function lives in alpha.py."
+    assert clean_answer(text) == "The function lives in alpha.py."
+
+
+def test_clean_answer_keeps_legitimate_answer_opening() -> None:
+    """Phrases like "We found..." can be a real answer, so they are preserved."""
+    text = "We found the function in alpha.py."
+    assert clean_answer(text) == text
 
 
 # --------------------------------------------------------------------------- #

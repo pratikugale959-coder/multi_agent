@@ -16,7 +16,7 @@ from google.genai import types
 from code_helper.agents.callbacks import strip_reasoning
 from code_helper.agents.fast_path import fast_path_callback
 from code_helper.agents.workers import build_worker_agents
-from code_helper.config import get_chat_model, get_settings
+from code_helper.core.config import get_chat_model, get_settings
 
 COORDINATOR_INSTRUCTION = """You are the coordinator (the "Boss") of a multi-agent code helper.
 

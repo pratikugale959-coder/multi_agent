@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from code_helper.config import (
+from code_helper.core.config import (
     ConfigError,
     describe_configuration,
     get_settings,
