@@ -268,6 +268,58 @@ def test_fast_path_callback_returns_immediate_content(
     assert "alpha.py" in (result.parts[0].text or "")
 
 
+def test_fast_path_summarizes_project_without_a_model_call(settings: Settings) -> None:
+    answer = deterministic_answer("Tell me something about this codebase in 5 lines", settings)
+    assert answer is not None
+    assert "This project demonstrates a tiny pipeline." in answer
+    assert "Python files" in answer
+    assert "pip install -r requirements.txt" in answer
+    # The short overview stays concise instead of dumping the full onboarding report.
+    assert len(answer.splitlines()) <= 6
+
+
+def test_fast_path_answers_project_overview_and_run_questions(settings: Settings) -> None:
+    for question in (
+        "What does this project do?",
+        "How do I run this project?",
+        "Where do I start?",
+    ):
+        answer = deterministic_answer(question, settings)
+        assert answer is not None, question
+        assert "alpha.py" in answer
+
+
+def test_fast_path_explains_the_helpers_own_scope(settings: Settings) -> None:
+    answer = deterministic_answer("Explain how the coordinator agent works", settings)
+    assert answer is not None
+    assert "code_helper/agents/coordinator.py" in answer
+    assert "outside the indexed scope" in answer
+    assert settings.target_repo_path.name in answer
+    assert "TARGET_REPO_PATH" in answer
+
+
+def test_fast_path_does_not_treat_file_questions_as_scope_questions(settings: Settings) -> None:
+    """A real file in the target project must still use the outline path."""
+    assert deterministic_answer("What does beta.py do?", settings) is not None
+    # A helper file that is not in the target still gets the scope explanation.
+    assert "indexed scope" in (deterministic_answer("Where is coordinator.py?", settings) or "")
+
+
+def test_fast_path_answers_overview_before_the_coordinator_model(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("code_helper.agents.fast_path.get_settings", lambda: settings)
+
+    class Context:
+        user_content = types.Content(
+            role="user", parts=[types.Part(text="What does this project do?")]
+        )
+
+    result = fast_path_callback(Context())
+    assert result is not None
+    assert "This project demonstrates a tiny pipeline." in (result.parts[0].text or "")
+
+
 # --------------------------------------------------------------------------- #
 # list_project_files
 # --------------------------------------------------------------------------- #
@@ -361,6 +413,26 @@ def test_clean_answer_keeps_legitimate_answer_opening() -> None:
     """Phrases like "We found..." can be a real answer, so they are preserved."""
     text = "We found the function in alpha.py."
     assert clean_answer(text) == text
+
+
+@pytest.mark.parametrize(
+    "planning",
+    [
+        "User wants overview. Use onboarding_guide.",
+        "User needs to find the right worker.",
+        "User is asking about the coordinator.",
+        "User requested a short summary.",
+        "The user wants an overview.",
+        "The user needs the coordinator explained.",
+    ],
+)
+def test_clean_answer_strips_extended_planning_prefixes(planning: str) -> None:
+    assert clean_answer(f"{planning}\nThe real answer is here.") == "The real answer is here."
+
+
+def test_clean_answer_removes_a_planning_only_response() -> None:
+    """Private routing notes must never become the visible answer."""
+    assert clean_answer("User wants overview. Use onboarding_guide.") == ""
 
 
 # --------------------------------------------------------------------------- #

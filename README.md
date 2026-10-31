@@ -12,7 +12,7 @@ Coordinator (deterministic fast path + routes other requests)
  `-- onboarding_guide    -> get_project_overview (files + README)
 ```
 Editable diagram: [`docs/architecture.drawio`](docs/architecture.drawio), open with [diagrams.net](https://app.diagrams.net).
-The coordinator has no tools of its own and delegates to one worker for open-ended questions. A narrow deterministic fast path answers a literal filename lookup ("where is `main.py`?") and a whole-file outline request ("what does `query_pipeline.py` do?") before any model call, so those questions still work when the hosted chat endpoint is slow. Workers cannot transfer tasks to peers or back to the coordinator, keeping routing to one coordinator-to-worker hop.
+The coordinator has no tools of its own and delegates to one worker for open-ended questions. A narrow deterministic fast path answers four shapes before any model call: a literal filename lookup ("where is `main.py`?"), a whole-file outline request ("what does `query_pipeline.py` do?"), a project overview or run question ("tell me about this codebase in 5 lines", "how do I run it?"), and a question about the helper's own coordinator/workers. The last one explains that only `target_project/` is indexed and points at `code_helper/agents/coordinator.py`. These questions therefore still work when the hosted chat endpoint is slow, and no private routing notes reach the user. Workers cannot transfer tasks to peers or back to the coordinator, keeping routing to one coordinator-to-worker hop.
 ## 2. Technology Stack
 | Component | Technology / configuration |
 |---|---|
@@ -136,7 +136,7 @@ python scripts/run_agent_demo.py
 ```
 ## 8. Verification Results
 The README records these results from the project environment:
-- **Offline tests:** `python -m pytest` - **161 passed**. Tests are mocked and do not require keys or network access.
+- **Offline tests:** `python -m pytest` - **173 passed**. Tests are mocked and do not require keys or network access.
 - **NVIDIA NIM embeddings:** embedding model verified; vector dimension **2048**.
 - **Pinecone:** 6 chunks indexed after `--prune`; index dimension 2048 with cosine similarity. A test query about vector upsert ranked `vector_store.py` first.
 - **Filesystem MCP:** server exposed 14 tools; all 10 allow-listed read-only tools were present, and a project file was read through MCP.
@@ -167,13 +167,17 @@ The scripts above are live integration checks; the offline unit tests are mocked
 11. **Windows console crash:** live scripts now reconfigure stdout/stderr to UTF-8, so model output containing Unicode cannot raise `UnicodeEncodeError`.
 12. **Planning text in answers:** `gpt-oss-20b` sometimes prefixed a correct answer with a planning line. `NVIDIA_REASONING_EFFORT=low` reduces it, and `agents/callbacks.py` deterministically strips any leading planning line from final worker/coordinator text without touching tool-call turns.
 13. **File-explanation timeout:** sending a whole source file to the chat model could exceed the 60 s model budget and produce no answer. `code_explainer` now calls `summarize_project_file` for a compact AST outline (docstring, imports, constants, classes, functions, line numbers) and reads the full file only when needed. A live explanation completed in ~44 s.
-14. **Slow hosted model blocked even routing:** the NVIDIA endpoint can take 20 s for a one-word reply and occasionally exceeds 60 s on the routing call. `agents/fast_path.py` now answers literal filename lookups and whole-file outline requests deterministically before any model call; a bounded timeout returns a retry message instead of an empty response. Under the same degraded endpoint, two fast-path questions completed in ~29 s total.
+14. **Slow hosted model blocked even routing:** the NVIDIA endpoint can take 20 s for a one-word reply and occasionally exceeds 60 s on the routing call. `agents/fast_path.py` now answers literal filename lookups, whole-file outline requests, project overview/run questions, and helper-scope questions deterministically before any model call; a bounded timeout returns a retry message instead of an empty response. The overview reuses the same evidence-only facts as `get_project_overview`, so it never invents purpose or commands. Under the same degraded endpoint, two fast-path questions completed in ~29 s total.
+15. **Planning text and a misleading clarification:** the coordinator could show `"User wants overview. Use onboarding_guide."` as its visible answer, and `code_explainer` asked "which file?" when the subject was the helper's own coordinator. The sanitizer now strips `User wants`, `User needs`, `User requested` and similar prefixes (a planning-only turn becomes empty instead of leaking), and helper-scope questions are answered directly with the indexed scope and the location of `code_helper/agents/coordinator.py`.
 ## 10. Example Questions
 - **“Where is `main.py`?”** the deterministic fast path returns its path and one-sentence purpose without a model call.
 - **“What does `query_pipeline.py` do?”** the deterministic fast path returns the AST outline (imports, constants, functions, docstrings); ask "walk me through `query_pipeline.py`" for a prose explanation from `code_explainer`.
+- **“Tell me something about this codebase in 5 lines”** the deterministic fast path returns a short evidence-based summary: purpose, files, entry points, dependencies, run commands and reading order.
+- **“Explain how the coordinator agent works”** the deterministic fast path explains that only `target_project/` is indexed and points at `code_helper/agents/coordinator.py`; it never asks which file or guesses from general knowledge.
 - **“Where is the upsert to Pinecone implemented?”** `code_searcher` uses RAG to locate the relevant function and return file/line references.
 - **“How do modules import and depend on one another?”** `architecture_mapper` uses deterministic Python AST analysis to inspect imports and entry points.
 ## 11. Known Limitations
 - Line-based chunks may not preserve complete function boundaries.
 - The language model may occasionally add a claim not supported by tool output; treat retrieved code and deterministic tool results as the ground truth.
+- Only `TARGET_REPO_PATH` is indexed (by default `target_project/`). Questions about the helper's own source are answered with a scope note and a pointer to `code_helper/agents/coordinator.py`; to search the helper itself, set `TARGET_REPO_PATH=./` and re-index.
 - `adk web` requires a browser and uses the same agent package as `adk run`.

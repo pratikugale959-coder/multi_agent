@@ -206,7 +206,7 @@ chat model.
 
 Rules:
 
-- The coordinator has no tools, so it cannot answer directly, except for the deterministic fast path for literal filename and whole-file outline questions.
+- The coordinator has no tools, so it cannot answer directly, except for the deterministic fast path. That path handles literal filename lookups, whole-file outline requests, project overview/run questions, and questions about the helper's own coordinator/workers. Helper-scope answers explain that only `target_project/` is indexed and point at `code_helper/agents/coordinator.py`.
 - Workers cannot transfer to peers or back to the coordinator.
 - Every worker has at least one tool; at least one tool uses no AI.
 
@@ -340,7 +340,7 @@ Embedding configuration is kept separate from chat configuration.
 | # | Decision | Rationale | Alternative rejected |
 |---|---|---|---|
 | D1 | Coordinator plus four workers; workers cannot transfer | Routing stays one hop and answers stay attributable | Free-form hand-off caused confused meta-answers |
-| D2 | Coordinator has no tools (besides the deterministic fast path) | Forces open-ended answers through a worker's evidence | A tool-using coordinator blurred responsibility |
+| D2 | Coordinator has no tools (besides the deterministic fast path for filenames, outlines, overviews and helper scope) | Forces open-ended answers through a worker's evidence | A tool-using coordinator blurred responsibility |
 | D3 | Custom RAG, one module per stage | Makes each stage explicit and unit-testable | Frameworks hid the stages and added dependencies |
 | D4 | Deterministic `ast` tools | Imports and definitions are facts | Asking the model to infer imports was unreliable |
 | D5 | One shared chat model | Explicit requirement; one configuration point | Per-agent models risked inconsistent behaviour |

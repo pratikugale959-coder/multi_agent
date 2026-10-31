@@ -7,8 +7,8 @@ sometimes prefixes an otherwise correct answer with a line of private planning
 but a deterministic cleanup makes the user-visible answer stable.
 
 The callback only touches **final text** responses. Tool-call responses are left
-alone, and if stripping would remove the whole answer the original response is
-returned unchanged.
+alone. A response made up entirely of planning text is reduced to an empty part
+instead of being shown to the user.
 """
 
 from __future__ import annotations
@@ -19,10 +19,21 @@ from typing import Any
 #: case-insensitive and only applies at the start of the response.
 _REASONING_PREFIXES: tuple[str, ...] = (
     "user asks",
+    "user asks for",
+    "user wants",
+    "user needs",
+    "user requested",
+    "user requests",
+    "user is asking",
+    "user is requesting",
+    "user is looking",
     "the user asks",
     "the user asked",
     "the user wants",
+    "the user needs",
+    "the user requested",
     "the user is asking",
+    "the user is requesting",
     "according to routing",
     "routing rules",
     "we need",
@@ -62,9 +73,13 @@ def _clean_answer(text: str) -> str:
 
 
 def _strip_leading_reasoning(text: str) -> str:
-    """Remove leading planning lines while preserving the actual answer."""
-    cleaned = _clean_answer(text)
-    return cleaned or text.strip()
+    """Remove leading planning lines while preserving the actual answer.
+
+    If *every* line was planning, the result is empty rather than the original
+    text: the user must never see private routing notes such as
+    ``"User wants overview. Use onboarding_guide."``.
+    """
+    return _clean_answer(text)
 
 
 def clean_answer(text: str) -> str:

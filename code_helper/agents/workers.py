@@ -242,7 +242,10 @@ Method:
    module docstring, imports, constants, classes, functions and line numbers. Use
    that outline as your primary source.
 2. If the user did not name a file and no file is obvious from the question, ask
-   which file they mean. Never read an arbitrary file just to produce an answer.
+   which file they mean -- unless the question is about the helper itself
+   (coordinator, code_helper, a worker name). In that case do not ask for a file:
+   say the helper's own source is outside the indexed scope and point to
+   `code_helper/agents/coordinator.py`.
 3. Only if the outline is incomplete or the user asks for line-level detail, read
    the full file once. Prefer the Filesystem MCP tools (`read_text_file` /
    `read_file`) restricted to the project root, or `read_project_file`.
