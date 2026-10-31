@@ -25,6 +25,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -276,6 +277,33 @@ def get_target_repo_path(settings: Settings | None = None) -> Path:
 # --------------------------------------------------------------------------- #
 # Shared chat model
 # --------------------------------------------------------------------------- #
+def _drop_thought_parts(response: Any) -> bool:
+    """Remove ``thought=True`` parts from an LLM response, in place.
+
+    Returns ``True`` when the response consisted only of thoughts and should
+    therefore not be yielded at all. The Dev UI renders thought parts as
+    visible ``THOUGHT`` blocks; the user asked to see only the final answer, so
+    reasoning is removed at the shared model layer before ADK can aggregate it
+    into an event.
+
+    Thinking signatures are intentionally discarded with the parts: the model
+    configured for this project (``openai/gpt-oss-20b`` through NVIDIA NIM)
+    does not require them, and keeping them would mean keeping the thought text.
+    """
+    content = getattr(response, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts:
+        return False
+
+    visible = [part for part in parts if not getattr(part, "thought", False)]
+    if len(visible) == len(parts):
+        return False
+    if not visible:
+        return True
+    content.parts = visible
+    return False
+
+
 @lru_cache(maxsize=1)
 def get_chat_model():
     """Return the single LiteLLM chat model shared by all five agents.
@@ -294,7 +322,6 @@ def get_chat_model():
     """
     import asyncio
     from collections.abc import AsyncGenerator
-    from typing import Any
 
     from google.adk.models.lite_llm import LiteLlm
     from pydantic import PrivateAttr
@@ -311,7 +338,15 @@ def get_chat_model():
         async def generate_content_async(
             self, llm_request: Any, stream: bool = False
         ) -> AsyncGenerator[Any, None]:
-            source = super().generate_content_async(llm_request, stream=stream)
+            # The NVIDIA NIM streaming parser intermittently rejects gpt-oss
+            # tool-call deltas (``unexpected tokens remaining in message
+            # header: Some("to=functions.rag_search")``), which aborts the whole
+            # run with no answer. The same completion is parsed reliably when
+            # it arrives as one JSON body, and the UI is configured to show
+            # only the final answer anyway, so ask LiteLLM for the complete
+            # response instead of token deltas. The SSE keep-alive in
+            # ``code_helper.web`` keeps the browser connection warm meanwhile.
+            source = super().generate_content_async(llm_request, stream=False)
             try:
                 while True:
                     try:
@@ -320,6 +355,8 @@ def get_chat_model():
                         )
                     except StopAsyncIteration:
                         return
+                    if _drop_thought_parts(item):
+                        continue
                     yield item
             except TimeoutError:
                 # A hard bound is still enforced, but the run ends with a

@@ -92,25 +92,30 @@ def clean_answer(text: str) -> str:
 
 
 def strip_reasoning(callback_context: Any, llm_response: Any) -> Any:
-    """ADK ``after_model_callback`` that removes a leading planning line.
+    """ADK ``after_model_callback`` that removes thoughts and planning lines.
 
-    Returns the modified response when something changed, otherwise ``None`` so
-    ADK keeps the original response untouched.
+    The shared model wrapper already drops ``thought=True`` parts before they
+    reach ADK, but this callback keeps the guarantee for any model path that
+    bypasses that wrapper. Returns the modified response when something
+    changed, otherwise ``None`` so ADK keeps the original response untouched.
     """
     content = getattr(llm_response, "content", None)
     parts = getattr(content, "parts", None)
     if not parts:
         return None
 
+    # Thoughts are private reasoning, never part of the answer. Removing them
+    # here as well means a response with no visible text cannot leak them.
+    visible_parts = [part for part in parts if not getattr(part, "thought", False)]
+    removed_thoughts = len(visible_parts) != len(parts)
+    if removed_thoughts:
+        content.parts = visible_parts
+
     # A pure tool-call turn has no text and is left untouched. Mixed responses
     # (a transfer call plus a short text part) still need their text sanitised.
-    text_parts = [
-        part
-        for part in parts
-        if getattr(part, "text", None) and not getattr(part, "thought", False)
-    ]
+    text_parts = [part for part in visible_parts if getattr(part, "text", None)]
     if not text_parts:
-        return None
+        return llm_response if removed_thoughts else None
 
     # ADK may split one answer across several text parts (for example a short
     # planning line followed by the answer). Sanitize the combined text so a
@@ -122,7 +127,7 @@ def strip_reasoning(callback_context: Any, llm_response: Any) -> Any:
         combined += part.text
     cleaned = _strip_leading_reasoning(combined)
     if cleaned == combined:
-        return None
+        return llm_response if removed_thoughts else None
 
     text_parts[0].text = cleaned
     for part in text_parts[1:]:

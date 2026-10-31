@@ -32,11 +32,12 @@ demo/
 ├── code_helper/
 │   ├── __init__.py             # Package import entry point
 │   ├── agent.py                # ADK web/run root_agent entry point
+│   ├── web.py                  # Dev UI launcher with SSE keep-alive
 │   ├── core/
 │   │   ├── config.py           # Environment, settings and shared chat model
 │   │   └── paths.py            # Path-traversal protection
 │   ├── agents/
-│   │   ├── callbacks.py        # Response hygiene (strip leading planning text)
+│   │   ├── callbacks.py        # Response hygiene (thoughts and planning text)
 │   │   ├── fast_path.py        # Deterministic filename / outline answers
 │   │   ├── coordinator.py      # Coordinator ("Boss")
 │   │   └── workers.py          # Four specialist worker agents
@@ -123,9 +124,11 @@ python -m code_helper.index_codebase --stats
 Run these commands from `demo/`, the directory containing `code_helper/`:
 ```bash
 adk run code_helper
-adk web
+python -m code_helper.web --port 8000
 ```
-`adk run` provides a terminal interface; `adk web` starts the local web interface.
+`adk run` provides a terminal interface. `python -m code_helper.web` serves the same ADK web UI as `adk web`, with two fixes for long model calls: a keep-alive comment every 10 seconds on `/run_sse`, so the browser does not abort a silent stream with `TypeError: Failed to fetch`, and UTF-8 console output for LiteLLM's emoji logs. Open `http://127.0.0.1:8000/dev-ui/` and select `code_helper`.
+The launcher keeps sessions in memory by default; pass `--session-service-uri sqlite:///./.adk/sessions.db` to persist them across restarts. `--heartbeat-seconds 0` disables the keep-alive.
+Chat responses contain only the final answer: reasoning (`thought=True`) parts are dropped at the shared model layer before ADK renders them, and the callback sanitizer removes any remaining planning line.
 ### Optional live integration checks
 These require valid keys and network access:
 ```bash
@@ -136,7 +139,7 @@ python scripts/run_agent_demo.py
 ```
 ## 8. Verification Results
 The README records these results from the project environment:
-- **Offline tests:** `python -m pytest` - **173 passed**. Tests are mocked and do not require keys or network access.
+- **Offline tests:** `python -m pytest` - **182 passed**. Tests are mocked and do not require keys or network access.
 - **NVIDIA NIM embeddings:** embedding model verified; vector dimension **2048**.
 - **Pinecone:** 6 chunks indexed after `--prune`; index dimension 2048 with cosine similarity. A test query about vector upsert ranked `vector_store.py` first.
 - **Filesystem MCP:** server exposed 14 tools; all 10 allow-listed read-only tools were present, and a project file was read through MCP.
@@ -148,8 +151,9 @@ The README records these results from the project environment:
 - **Retrieval (warm):** ~0.5–0.9 s per question (query embedding + Pinecone query).
 - **First question per process:** ~4–5 s once, while the Pinecone client resolves the index host; the handle is reused afterwards.
 - **Model calls dominate:** routing plus a tool-using worker means 2–3 sequential LLM calls. `NVIDIA_MAX_TOKENS` (default 800) bounds generation length; lower it for faster, shorter answers. `NVIDIA_TIMEOUT_SECONDS` (default 60) stops a stalled request from blocking the session indefinitely, enforced at the ADK layer so provider adapters cannot override it.
-- **Reasoning budget:** `NVIDIA_REASONING_EFFORT=low` is sent through `extra_body` (the NVIDIA NIM provider rejects it as a top-level LiteLLM argument). This reduced a simple model call from 5.7 s to 1.2 s. A worker callback also removes any leading planning line that still slips into an answer.
+- **Reasoning budget:** `NVIDIA_REASONING_EFFORT=low` is sent through `extra_body` (the NVIDIA NIM provider rejects it as a top-level LiteLLM argument). This reduced a simple model call from 5.7 s to 1.2 s. `thought=True` reasoning parts are dropped before the Dev UI renders them, and a worker callback removes any leading planning line that still slips into an answer.
 - **Live end-to-end:** two model-backed questions (a located file and an absent topic) completed in ~39 s total, with correct answers and no timeout; a single question after a cold start was ~31–34 s. A file explanation using the AST outline completed in ~44 s. With the endpoint degraded, two deterministic fast-path questions completed in ~29 s total without a model call.
+- **Web UI after the fixes:** sequential questions in the Dev UI (`Where is the Pinecone upsert implemented?`, `How is the embedding retry logic implemented?`, `Where is main.py?`) completed in 12.1 s, 16.2 s, and 3.0 s. Answers contained no `THOUGHT` blocks, the browser reported no `Failed to fetch`, and a 60 s silent model turn received five keep-alive comments without disconnecting.
 - **MCP cold start:** the first explainer call starts the `npx` filesystem server (a few seconds); later calls reuse it.
 
 The scripts above are live integration checks; the offline unit tests are mocked.
@@ -169,6 +173,9 @@ The scripts above are live integration checks; the offline unit tests are mocked
 13. **File-explanation timeout:** sending a whole source file to the chat model could exceed the 60 s model budget and produce no answer. `code_explainer` now calls `summarize_project_file` for a compact AST outline (docstring, imports, constants, classes, functions, line numbers) and reads the full file only when needed. A live explanation completed in ~44 s.
 14. **Slow hosted model blocked even routing:** the NVIDIA endpoint can take 20 s for a one-word reply and occasionally exceeds 60 s on the routing call. `agents/fast_path.py` now answers literal filename lookups, whole-file outline requests, project overview/run questions, and helper-scope questions deterministically before any model call; a bounded timeout returns a retry message instead of an empty response. The overview reuses the same evidence-only facts as `get_project_overview`, so it never invents purpose or commands. Under the same degraded endpoint, two fast-path questions completed in ~29 s total.
 15. **Planning text and a misleading clarification:** the coordinator could show `"User wants overview. Use onboarding_guide."` as its visible answer, and `code_explainer` asked "which file?" when the subject was the helper's own coordinator. The sanitizer now strips `User wants`, `User needs`, `User requested` and similar prefixes (a planning-only turn becomes empty instead of leaking), and helper-scope questions are answered directly with the indexed scope and the location of `code_helper/agents/coordinator.py`.
+16. **Agent thoughts in the web UI:** streaming reasoning arrived as `thought=True` parts, which the ADK Dev UI renders as visible `THOUGHT` blocks. The shared model wrapper now drops thought-only chunks before ADK aggregates them, so the chat shows the final answer without interrupting it with private planning. The `strip_reasoning` callback repeats the filter as a fallback.
+17. **Second question failed with `TypeError: Failed to fetch`:** `/run_sse` writes nothing while a model call is pending, and a slow NVIDIA NIM turn can leave the stream silent for over a minute, which can be treated as a dead connection. `code_helper/web.py` wraps the ADK app in an ASGI middleware that writes SSE keep-alive comments during idle periods; it also enables auto-created sessions and tags the launcher's output streams as UTF-8.
+18. **NIM streaming tool calls aborted runs:** the streaming parser intermittently rejected gpt-oss tool-call deltas (`MidStreamFallbackError: ... unexpected tokens remaining in message header: Some("to=functions.rag_search")`), leaving the chat with no answer. The shared model now requests the complete completion instead of token deltas; the UI only shows the final answer anyway, so nothing user-visible is lost, and the keep-alive covers the wait.
 ## 10. Example Questions
 - **“Where is `main.py`?”** the deterministic fast path returns its path and one-sentence purpose without a model call.
 - **“What does `query_pipeline.py` do?”** the deterministic fast path returns the AST outline (imports, constants, functions, docstrings); ask "walk me through `query_pipeline.py`" for a prose explanation from `code_explainer`.

@@ -11,10 +11,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from google.adk.agents.run_config import RunConfig
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
+from code_helper.agents.callbacks import strip_reasoning
 from code_helper.agents.coordinator import root_agent, setup_invocation_limits
 from code_helper.agents.workers import (
     _invocation_model_counts,
@@ -25,7 +28,12 @@ from code_helper.agents.workers import (
     enforce_tool_call_limit,
     reset_invocation_state,
 )
-from code_helper.core.config import TIMEOUT_FALLBACK_TEXT, get_chat_model, get_settings
+from code_helper.core.config import (
+    TIMEOUT_FALLBACK_TEXT,
+    _drop_thought_parts,
+    get_chat_model,
+    get_settings,
+)
 
 WORKER_NAMES = ["code_searcher", "code_explainer", "architecture_mapper", "onboarding_guide"]
 
@@ -242,3 +250,115 @@ def test_reset_invocation_state_clears_all_counters() -> None:
     assert invocation_id not in _invocation_tool_counts
     assert invocation_id not in _invocation_seen_calls
     assert invocation_id not in _invocation_model_counts
+
+
+def test_drop_thought_parts_keeps_visible_text() -> None:
+    response = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="private plan", thought=True),
+                types.Part(text="The answer"),
+            ],
+        )
+    )
+
+    dropped = _drop_thought_parts(response)
+
+    assert dropped is False
+    assert [part.text for part in response.content.parts] == ["The answer"]
+
+
+def test_drop_thought_parts_discards_a_thought_only_response() -> None:
+    response = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text="private plan", thought=True)],
+        )
+    )
+
+    assert _drop_thought_parts(response) is True
+
+
+def test_drop_thought_parts_leaves_normal_responses_untouched() -> None:
+    parts = [types.Part(text="The answer")]
+    response = LlmResponse(content=types.Content(role="model", parts=parts))
+
+    assert _drop_thought_parts(response) is False
+    assert response.content.parts == parts
+
+
+def test_streaming_model_never_yields_thought_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The user sees the final answer only, even while reasoning streams."""
+    requested_streams: list[bool] = []
+
+    async def fake_stream(self, llm_request, stream=False):
+        requested_streams.append(stream)
+        yield LlmResponse(
+            partial=True,
+            content=types.Content(
+                role="model", parts=[types.Part(text="let me think", thought=True)]
+            ),
+        )
+        yield LlmResponse(
+            partial=True,
+            content=types.Content(role="model", parts=[types.Part(text="answer")]),
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="final reasoning", thought=True),
+                    types.Part(text="answer"),
+                ],
+            )
+        )
+
+    monkeypatch.setattr(LiteLlm, "generate_content_async", fake_stream)
+    model = get_chat_model()
+    request = LlmRequest(
+        model=model.model,
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+
+    async def collect() -> list[str]:
+        texts: list[str] = []
+        async for item in model.generate_content_async(request, stream=True):
+            texts.extend(part.text for part in item.content.parts if part.text)
+        return texts
+
+    assert asyncio.run(collect()) == ["answer", "answer"]
+    # NIM's streaming tool-call parser is unreliable; the wrapper asks for the
+    # complete response even when ADK requests a stream.
+    assert requested_streams == [False]
+
+
+def test_strip_reasoning_callback_removes_thought_parts() -> None:
+    response = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="private plan", thought=True),
+                types.Part(text="The answer"),
+            ],
+        )
+    )
+
+    cleaned = strip_reasoning(None, response)
+
+    assert cleaned is response
+    assert [part.text for part in cleaned.content.parts] == ["The answer"]
+
+
+def test_strip_reasoning_callback_discards_thought_only_response() -> None:
+    response = LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text="private plan", thought=True)],
+        )
+    )
+
+    cleaned = strip_reasoning(None, response)
+
+    assert cleaned is response
+    assert cleaned.content.parts == []
