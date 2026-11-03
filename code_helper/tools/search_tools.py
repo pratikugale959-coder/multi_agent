@@ -212,6 +212,41 @@ def _lexically_supported(query: str, results: list[RetrievedChunk]) -> bool:
     return False
 
 
+def _meaningful_terms(query: str) -> set[str]:
+    """Return the query's content terms, using the same rule as the gate."""
+    return {
+        token
+        for token in re.findall(r"[a-z_][a-z0-9_]{2,}", query.lower())
+        if token not in _STOPWORDS
+    }
+
+
+def _best_term_match(
+    query: str, results: list[RetrievedChunk]
+) -> tuple[RetrievedChunk, set[str]] | None:
+    """Return the sole result that contains every meaningful query term.
+
+    Vector order is usually good, but a shortened or rephrased worker query can
+    rank a storage helper above the file that actually defines the operation.
+    When exactly one result mentions *every* query term, that is strong,
+    deterministic evidence for where the operation lives. Ambiguous cases
+    (several full matches, or no full match) return ``None`` and keep normal
+    retrieval order.
+    """
+    terms = _meaningful_terms(query)
+    if len(terms) < 2:
+        return None
+
+    full_matches: list[RetrievedChunk] = []
+    for result in results:
+        haystack = f"{result.file_path}\n{result.text}".lower()
+        if all(term in haystack for term in terms):
+            full_matches.append(result)
+    if len(full_matches) != 1:
+        return None
+    return full_matches[0], terms
+
+
 def rag_search(query: str, top_k: int = 5) -> str:
     """Search the indexed codebase for code that answers *query*.
 
@@ -298,4 +333,21 @@ def rag_search(query: str, top_k: int = 5) -> str:
             "do NOT speculate."
         )
 
-    return f"Query: {query}\n\n{format_results(results)}"
+    header = f"Query: {query}\n"
+    best_match = _best_term_match(query, results)
+    if best_match is not None:
+        best_result, terms = best_match
+        if best_result is not results[0]:
+            # Put the sole full-term match first. The hint alone was not always
+            # enough: a model tends to cite the top-ranked block, which may be a
+            # storage helper. Ordering is deterministic evidence, not a guess.
+            results = [best_result, *(result for result in results if result is not best_result)]
+            header += (
+                f"\nBest query-term match (listed first): `{best_result.file_path}` "
+                f"(lines {best_result.line_range}) mentions every meaningful query "
+                f"term ({', '.join(sorted(terms))}). Prefer this file when explaining "
+                "where the operation is defined; do not cite a helper that merely "
+                "receives its output.\n"
+            )
+
+    return f"{header}\n{format_results(results)}"

@@ -5,6 +5,8 @@ shapes have a fully deterministic answer already available in the repository:
 
 * ``"Where is main.py?"`` -- locate a literally named file.
 * ``"What does query_pipeline.py do?"`` -- show the AST outline of that file.
+* ``"What does main.py import?"`` / ``"How does main.py connect to
+  query_pipeline.py?"`` -- describe real imports from the AST graph.
 * ``"Tell me about this codebase in 5 lines"`` -- a short evidence-based overview.
 * ``"Explain how the coordinator agent works"`` -- explain the indexed scope and
   point at the helper's own source, which is outside that scope by default.
@@ -27,10 +29,16 @@ from code_helper.core.config import Settings, get_settings
 from code_helper.core.paths import project_root
 from code_helper.rag.ingestion import IngestionError, read_source_file
 from code_helper.tools.explain_tools import _outline_for_source
+from code_helper.tools.import_analysis import (
+    render_importers,
+    render_imports,
+    render_relationship,
+)
 from code_helper.tools.onboarding_tools import ProjectOverview, collect_project_overview
 from code_helper.tools.search_tools import _named_files
+from code_helper.tools.symbol_locator import locate_symbol
 
-_WHERE_RE = re.compile(r"^(where\s+is|where's|locate|find)\b", re.IGNORECASE)
+_WHERE_RE = re.compile(r"^(where\s+is|where\s+are|where's|locate|find)\b", re.IGNORECASE)
 _EXPLAIN_RE = re.compile(r"^(what\s+does|what\s+is|explain|describe|summari[sz]e)\b", re.IGNORECASE)
 _ALLOWED_WORDS = frozenset(
     {
@@ -159,6 +167,56 @@ def _is_overview_question(text: str) -> bool:
     return bool(_OVERVIEW_TARGET_RE.search(text) and _OVERVIEW_INTENT_RE.match(text))
 
 
+#: Relation words that mark an import/connection question rather than a pure
+#: "where is this file?" lookup.
+_RELATION_RE = re.compile(
+    r"\b(?:imports?|imported|uses?|used|depends?|dependencies|connect(?:s|ed|ion)?|"
+    r"relat(?:e|es|ed|ionship)?|calls?|called|references?|between)\b",
+    re.IGNORECASE,
+)
+_INCOMING_IMPORT_RE = re.compile(
+    r"\b(?:what|which)\s+(?:(?:files?|modules?)\s+)?imports?\b"
+    r"|\bwho\s+imports\b"
+    r"|\bwhere\s+is\b.+\bused\b"
+    r"|\bwho\s+uses\b"
+    r"|\bimported\s+by\b",
+    re.IGNORECASE,
+)
+_OUTGOING_IMPORT_RE = re.compile(
+    r"\b(?:what|which)\s+(?:files?|modules?)\s+does\b.+\bimport\b"
+    r"|\bwhat\s+does\b.+\bimport\b"
+    r"|\bimports?\s+of\b"
+    r"|\bdepends?\s+on\b"
+    r"|\bdependenc(?:y|ies)\b"
+    r"|\bimports?\b",
+    re.IGNORECASE,
+)
+
+
+def _relation_answer(text: str, names: list[str], settings: Settings) -> str | None:
+    """Answer import/connection questions from the AST import graph.
+
+    Two named files describe a connection; one named file answers either
+    "what does it import?" or "what imports it?". Anything less specific is left
+    to the worker agents so the fast path never guesses at intent.
+    """
+    if not names:
+        return None
+
+    if len(names) >= 2:
+        if not _RELATION_RE.search(text):
+            return None
+        return render_relationship(names[0], names[1], settings)
+
+    # Incoming direction is checked first: "what imports X?" also contains the
+    # word "imports", but means the opposite of "what does X import?".
+    if _INCOMING_IMPORT_RE.search(text):
+        return render_importers(names[0], settings)
+    if _OUTGOING_IMPORT_RE.search(text):
+        return render_imports(names[0], settings)
+    return None
+
+
 def _first_sentence(text: str) -> str:
     """Return the first sentence of *text* (used to keep the summary short)."""
     collapsed = " ".join(text.split())
@@ -254,6 +312,23 @@ def deterministic_answer(text: str, settings: Settings | None = None) -> str | N
         _named_file_is_readable(name, settings) for name in names
     ):
         return _scope_answer(settings)
+
+    # Import and connection questions about named files are answered from the
+    # AST graph. This covers "what does main.py import?", "where is alpha.py
+    # used?" and "how does main.py connect to query_pipeline.py?" without a model
+    # call, so an obvious relationship never depends on a slow endpoint.
+    relation = _relation_answer(cleaned, names, settings)
+    if relation is not None:
+        return relation
+
+    # A "where is ...?" question without a filename is answered from real
+    # function/class definitions when the match is unambiguous. This prevents
+    # the coordinator from asking "which document?" for an obvious operation
+    # such as "Where is the document loaded?".
+    if not names and _WHERE_RE.match(cleaned):
+        located = locate_symbol(cleaned, settings)
+        if located is not None:
+            return located
 
     # Project-level overview/setup questions are answered from the same
     # evidence-based overview the onboarding worker uses, without a model call.

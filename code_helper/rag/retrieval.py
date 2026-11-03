@@ -19,8 +19,12 @@ from code_helper.rag.vector_store import PineconeVectorStore
 
 _log = logging.getLogger(__name__)
 
-#: How many characters of a chunk to show in a rendered result.
-SNIPPET_CHARS = 1200
+#: How many characters of a chunk to show in a rendered result. A 100-line
+#: chunk is often only a few kilobytes; 1200 characters previously cut off the
+#: function that answered the question (for example ``embed_chunks`` in a small
+#: ``indexer.py``), so the model saw only the file's opening lines and cited a
+#: less relevant neighbour. The wider window keeps whole small-file chunks.
+SNIPPET_CHARS = 4000
 
 
 @lru_cache(maxsize=8)

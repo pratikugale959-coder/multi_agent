@@ -122,6 +122,45 @@ def test_rag_search_keeps_lexically_supported_results(
     assert "No relevant evidence" not in result
 
 
+def test_rag_search_points_at_the_file_covering_every_query_term(
+    settings: Settings, patch_tool_settings, monkeypatch
+) -> None:
+    """Regression: a higher-ranked storage helper must not hide the defining file."""
+    from code_helper.rag.retrieval import RetrievedChunk
+
+    patch_tool_settings(settings)
+    monkeypatch.setattr(
+        search_tools,
+        "retrieve",
+        lambda *a, **k: [
+            RetrievedChunk(
+                "rank1",
+                "vector_store.py",
+                81,
+                170,
+                0.70,
+                "for item in chunks_with_embeddings:\n    index.upsert(vectors=payload)",
+            ),
+            RetrievedChunk(
+                "rank2",
+                "indexer.py",
+                1,
+                91,
+                0.69,
+                "def embed_chunks(chunks):\n    # Embedded document chunks are returned here.",
+            ),
+        ],
+    )
+    result = rag_search("document chunks embedded")
+    assert "Best query-term match" in result
+    hint = result.split("Best query-term match", 1)[1]
+    assert "indexer.py" in hint
+    assert "vector_store.py" not in hint.split("Prefer this file", 1)[0]
+    # The full-term match is also listed first, so a model that cites the top
+    # result lands on the defining file rather than the storage helper.
+    assert result.index("indexer.py (lines") < result.index("vector_store.py (lines")
+
+
 def test_rag_search_exact_filename_reads_the_named_file(
     settings: Settings, patch_tool_settings, monkeypatch
 ) -> None:
@@ -252,7 +291,25 @@ def test_fast_path_summarizes_named_file(settings: Settings) -> None:
 
 def test_fast_path_skips_mixed_or_unrelated_queries(settings: Settings) -> None:
     assert deterministic_answer("Where is the Kubernetes deployment configured?", settings) is None
-    assert deterministic_answer("Where is alpha.py used?", settings) is None
+    assert deterministic_answer("Explain the design of the deployment process", settings) is None
+
+
+def test_fast_path_answers_import_questions_without_a_model(settings: Settings) -> None:
+    outgoing = deterministic_answer("What files does beta.py import?", settings)
+    assert outgoing is not None
+    assert "`alpha.py`" in outgoing
+    assert "from alpha import hello" in outgoing
+
+    incoming = deterministic_answer("Where is alpha.py used?", settings)
+    assert incoming is not None
+    assert "`beta.py`" in incoming
+
+
+def test_fast_path_answers_two_file_relationship(settings: Settings) -> None:
+    answer = deterministic_answer("How does beta.py connect to alpha.py?", settings)
+    assert answer is not None
+    assert "`beta.py` -> `alpha.py`" in answer
+    assert "from alpha import hello" in answer
 
 
 def test_fast_path_callback_returns_immediate_content(

@@ -7,6 +7,7 @@ inference or network access is required.
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +17,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
+from litellm import ModelResponse
 
 from code_helper.agents.callbacks import strip_reasoning
 from code_helper.agents.coordinator import root_agent, setup_invocation_limits
@@ -36,6 +38,32 @@ from code_helper.core.config import (
 )
 
 WORKER_NAMES = ["code_searcher", "code_explainer", "architecture_mapper", "onboarding_guide"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_model_breaker():
+    """Keep circuit-breaker state from leaking between tests."""
+    model = get_chat_model()
+    model.reset_health()
+    yield
+    model.reset_health()
+
+
+def _completion(text: str) -> ModelResponse:
+    """Build a minimal LiteLLM response understood by ADK's adapter."""
+    return ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
 
 
 def test_coordinator_exists_and_is_named() -> None:
@@ -91,6 +119,27 @@ def test_shared_model_bounds_latency() -> None:
         assert additional["extra_body"] == {"reasoning_effort": settings.reasoning_effort}
     # The hard timeout is enforced at the ADK layer, not only by LiteLLM.
     assert model._timeout_seconds == settings.chat_timeout_seconds
+    # Failover configuration is present and bounded too.
+    assert model._fallback_timeout_seconds == settings.fallback_chat_timeout_seconds
+    assert model._primary_cooldown_seconds == settings.primary_cooldown_seconds
+    expected_fallbacks = [
+        model_id
+        for model_id in settings.fallback_chat_model_ids
+        if model_id != settings.chat_model_id
+    ]
+    assert len(model._fallback_models) == len(expected_fallbacks)
+
+
+def _collect_text(model, request) -> str:
+    async def consume() -> str:
+        chunks: list[str] = []
+        async for item in model.generate_content_async(request):
+            for part in item.content.parts:
+                if part.text:
+                    chunks.append(part.text)
+        return "".join(chunks)
+
+    return asyncio.run(consume())
 
 
 def test_hard_timeout_cancels_a_slow_generation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,26 +150,98 @@ def test_hard_timeout_cancels_a_slow_generation(monkeypatch: pytest.MonkeyPatch)
 
     model = get_chat_model()
     monkeypatch.setattr(model.llm_client, "acompletion", never_returns)
-    original = model._timeout_seconds
-    model._timeout_seconds = 0.2
+    for fallback in model._fallback_models:
+        monkeypatch.setattr(fallback.llm_client, "acompletion", never_returns)
+    monkeypatch.setattr(model, "_timeout_seconds", 0.2)
+    monkeypatch.setattr(model, "_fallback_timeout_seconds", 0.2)
     request = LlmRequest(
         model=model.model,
         contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
     )
 
-    async def consume() -> str:
-        chunks = []
-        async for item in model.generate_content_async(request):
-            for part in item.content.parts:
-                if part.text:
-                    chunks.append(part.text)
-        return "".join(chunks)
-
-    try:
-        text = asyncio.run(consume())
-    finally:
-        model._timeout_seconds = original
+    text = _collect_text(model, request)
     assert text == TIMEOUT_FALLBACK_TEXT
+
+
+def test_primary_timeout_falls_back_to_a_working_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user gets an answer from the fallback instead of a timeout notice."""
+    model = get_chat_model()
+    assert model._fallback_models, "no fallback models configured"
+
+    async def never_returns(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    async def working_fallback(*args, **kwargs):
+        return _completion("answer from the fallback model")
+
+    monkeypatch.setattr(model.llm_client, "acompletion", never_returns)
+    for fallback in model._fallback_models:
+        monkeypatch.setattr(fallback.llm_client, "acompletion", working_fallback)
+    monkeypatch.setattr(model, "_timeout_seconds", 0.2)
+
+    request = LlmRequest(
+        model=model.model,
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+
+    text = _collect_text(model, request)
+    assert text == "answer from the fallback model"
+    # The breaker remembers the failure so the next step skips the primary.
+    assert model._primary_unavailable_until > time.monotonic()
+
+
+def test_primary_error_falls_back_to_a_working_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = get_chat_model()
+    assert model._fallback_models, "no fallback models configured"
+
+    async def provider_error(*args, **kwargs):
+        raise RuntimeError("provider is down")
+
+    async def working_fallback(*args, **kwargs):
+        return _completion("recovered answer")
+
+    monkeypatch.setattr(model.llm_client, "acompletion", provider_error)
+    for fallback in model._fallback_models:
+        monkeypatch.setattr(fallback.llm_client, "acompletion", working_fallback)
+
+    request = LlmRequest(
+        model=model.model,
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+
+    assert _collect_text(model, request) == "recovered answer"
+    assert model._primary_unavailable_until > time.monotonic()
+
+
+def test_breaker_skips_the_primary_during_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = get_chat_model()
+    assert model._fallback_models, "no fallback models configured"
+    calls: list[str] = []
+
+    async def primary_must_not_run(*args, **kwargs):
+        calls.append("primary")
+        raise AssertionError("the primary must be skipped during cooldown")
+
+    async def working_fallback(*args, **kwargs):
+        calls.append("fallback")
+        return _completion("fallback while cooling down")
+
+    monkeypatch.setattr(model.llm_client, "acompletion", primary_must_not_run)
+    for fallback in model._fallback_models:
+        monkeypatch.setattr(fallback.llm_client, "acompletion", working_fallback)
+    model._primary_unavailable_until = time.monotonic() + 60
+
+    request = LlmRequest(
+        model=model.model,
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+
+    assert _collect_text(model, request) == "fallback while cooling down"
+    assert calls == ["fallback"]
 
 
 def test_code_explainer_has_mcp_toolset_attached() -> None:
@@ -147,6 +268,15 @@ def test_build_worker_agents_returns_four_distinct_agents() -> None:
 def test_worker_instructions_are_specific() -> None:
     for worker in root_agent.sub_agents:
         assert worker.instruction and "you are" in worker.instruction.lower()
+
+
+def test_code_searcher_can_refine_a_weak_search() -> None:
+    from code_helper.agents.workers import get_max_tool_calls_for_agent
+
+    assert get_max_tool_calls_for_agent("code_searcher") >= 2
+    searcher = next(a for a in root_agent.sub_agents if a.name == "code_searcher")
+    assert "at most 3 times" in searcher.instruction
+    assert "never with the\n   same query twice" in searcher.instruction
 
 
 def test_mapper_refuses_arbitrary_files_and_absent_technology() -> None:

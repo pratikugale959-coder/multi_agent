@@ -84,6 +84,27 @@ def test_chat_timeout_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert get_settings().chat_timeout_seconds == 12
 
 
+def test_fallback_models_read_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NVIDIA_FALLBACK_CHAT_MODELS", "nvidia/model-a, nvidia/model-b")
+    monkeypatch.setenv("NVIDIA_FALLBACK_TIMEOUT_SECONDS", "99")
+    monkeypatch.setenv("NVIDIA_PRIMARY_COOLDOWN_SECONDS", "42")
+    reset_settings_cache()
+    settings = get_settings()
+    assert settings.fallback_chat_model_ids == ("nvidia/model-a", "nvidia/model-b")
+    assert settings.fallback_chat_timeout_seconds == 99
+    assert settings.primary_cooldown_seconds == 42
+    assert settings.litellm_fallback_chat_models == (
+        "nvidia_nim/nvidia/model-a",
+        "nvidia_nim/nvidia/model-b",
+    )
+
+
+def test_fallback_models_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NVIDIA_FALLBACK_CHAT_MODELS", "off")
+    reset_settings_cache()
+    assert get_settings().fallback_chat_model_ids == ()
+
+
 def test_litellm_model_ids_use_nvidia_nim_prefix(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     assert settings.litellm_chat_model == "nvidia_nim/openai/gpt-oss-20b"

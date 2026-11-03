@@ -73,6 +73,14 @@ def test_format_results_includes_file_lines_and_score() -> None:
     assert "def main" in rendered
 
 
+def test_format_results_keeps_a_function_beyond_the_old_snippet_limit() -> None:
+    """A small file's relevant function must not be cut off before the model sees it."""
+    text = ("# filler line\n" * 250) + "def embed_chunks(chunks):\n    return chunks\n"
+    chunk = RetrievedChunk("id", "indexer.py", 1, 91, 0.64, text)
+    rendered = format_results([chunk])
+    assert "def embed_chunks" in rendered
+
+
 def test_answer_question_payload(settings: Settings, fake_embedder, fake_store) -> None:
     fake_store.matches = [_match("a.py", 1, 5, 0.9), _match("b.py", 6, 9, 0.8)]
     payload = answer_question("q", settings=settings, embedder=fake_embedder, store=fake_store)

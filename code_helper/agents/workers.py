@@ -54,9 +54,12 @@ _invocation_model_counts: dict[str, dict[str, int]] = {}
 def get_max_tool_calls_for_agent(agent_name: str) -> int:
     """Return specific maximum tool calls allowed per worker agent."""
     settings = get_settings()
-    # Onboarding and Search workers need only 1 tool call
-    if agent_name in ("onboarding_guide", "code_searcher"):
+    # Onboarding needs one overview; the searcher may refine a weak query a
+    # couple of times before synthesizing.
+    if agent_name == "onboarding_guide":
         return 1
+    if agent_name == "code_searcher":
+        return settings.max_tool_calls
     # Explainer reads at most 2 files
     if agent_name == "code_explainer":
         return 2
@@ -205,28 +208,37 @@ never show your reasoning, analysis, tool deliberation, or lines such as
 "The user asks..." or "We need to...".
 
 Method:
-1. Call the `rag_search` tool once with a focused natural-language query. If the
+1. Call the `rag_search` tool with a focused natural-language query. If the
    user names a file (e.g. `main.py`), include that filename in the query:
    `rag_search` then performs an exact file lookup and returns that file.
-2. After `rag_search` returns, DO NOT call it again.
-3. Base every claim strictly on the returned blocks. If the tool reports an
+2. If the results do not mention the requested symbol, file or operation, refine
+   the query and search again: use different wording, or include the exact
+   symbol/filename. You may call `rag_search` at most 3 times, and never with the
+   same query twice.
+3. Once the returned blocks contain the answer, stop calling tools immediately.
+4. Base every claim strictly on the returned blocks. If the tool reports an
    "Exact file match", answer with its relative path and a one-sentence purpose;
    do NOT reproduce the file, and quote at most 5 relevant lines.
-4. If the requested file, function or symbol does not appear in ANY returned
-   block, answer exactly: "Not found in the indexed code." Do not infer a file's
-   existence or contents from imports in other files.
-5. If `rag_search` says "No relevant evidence found", answer exactly:
+5. Prefer the highest-ranked result that contains ALL the meaningful terms from
+   the question. When several files mention the topic, cite the file where the
+   operation is DEFINED (the function that does the work), not a caller or a
+   storage helper that merely receives its result.
+6. If the requested file, function or symbol does not appear in ANY returned
+   block after your searches, answer exactly: "Not found in the indexed code."
+   Do not infer a file's existence or contents from imports in other files.
+7. If every `rag_search` says "No relevant evidence found", answer exactly:
    "Not found in the indexed code." Do not call another tool and do not use
    general knowledge about the topic (for example Kubernetes or Docker).
-6. Never write "it is possible", "suggests", "might be" or "likely" about where
+8. Never write "it is possible", "suggests", "might be" or "likely" about where
    something is implemented. Report only what the tool returned.
-7. Always cite the source filename and line range (e.g. `vector_store.py` lines
+9. Always cite the source filename and line range (e.g. `vector_store.py` lines
    40-95). Quote only the relevant lines; do not paste whole files.
-8. Never invent a filename, function or line number.
+10. Never invent a filename, function or line number.
 
-CRITICAL RULE: Call `rag_search` at most once per query. Immediately provide your
-final textual answer once search results are returned. You do not explain designs
-or architecture in depth; that is another agent's job.
+CRITICAL RULE: Call `rag_search` at most 3 times, and only with different
+queries. Immediately provide your final textual answer once the results answer
+the question. You do not explain designs or architecture in depth; that is
+another agent's job.
 
 FINAL REMINDER: Start your answer with the file path or "Not found in the indexed
 code." Never start with "User asks", "We need", "The user", or a plan. Do not

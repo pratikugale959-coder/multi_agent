@@ -21,13 +21,17 @@ an external service.
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+
+_log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Paths
@@ -71,6 +75,21 @@ TIMEOUT_FALLBACK_TEXT = (
 )
 DEFAULT_CHAT_TIMEOUT_SECONDS: int = 60
 DEFAULT_REASONING_EFFORT: str = "low"
+
+#: Models tried when the primary chat endpoint fails (timeout, connection
+#: error or provider error). Both were verified with live NVIDIA NIM tool calls.
+DEFAULT_FALLBACK_CHAT_MODEL_IDS: tuple[str, ...] = (
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "nvidia/nemotron-3.5-bolt-e4b",
+)
+#: Fallback generation is allowed longer than the primary probe: the primary
+#: is abandoned after ``NVIDIA_TIMEOUT_SECONDS`` so the user does not wait for a
+#: dead endpoint, while a working fallback gets room to finish a real answer.
+DEFAULT_FALLBACK_CHAT_TIMEOUT_SECONDS: int = 120
+#: After the primary fails, send later calls straight to the fallback for this
+#: long. Without a breaker every step of a multi-agent run would pay the primary
+#: timeout again (routing, tool turn, final answer).
+DEFAULT_PRIMARY_COOLDOWN_SECONDS: int = 300
 
 #: Required credentials. Listed here so validation and error messages agree.
 REQUIRED_NVIDIA_VARS = ("NVIDIA_API_KEY",)
@@ -139,6 +158,16 @@ def _as_int(name: str, default: int) -> int:
         raise ConfigError(f"Environment variable {name} must be an integer, got {raw!r}") from exc
 
 
+def _as_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Read a comma-separated list, or disable it with ``none``/``off``."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    if raw.strip().lower() in {"none", "off", "disabled"}:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 # --------------------------------------------------------------------------- #
 # Typed settings
 # --------------------------------------------------------------------------- #
@@ -164,6 +193,12 @@ class Settings:
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     chat_timeout_seconds: int = DEFAULT_CHAT_TIMEOUT_SECONDS
+    #: Models tried in order when the primary chat model times out or errors.
+    fallback_chat_model_ids: tuple[str, ...] = DEFAULT_FALLBACK_CHAT_MODEL_IDS
+    #: Per-attempt wall-clock bound for each fallback model.
+    fallback_chat_timeout_seconds: int = DEFAULT_FALLBACK_CHAT_TIMEOUT_SECONDS
+    #: How long the circuit breaker skips the primary after a failure.
+    primary_cooldown_seconds: int = DEFAULT_PRIMARY_COOLDOWN_SECONDS
     #: Reasoning budget for models that support it (gpt-oss via NVIDIA NIM).
     #: ``"low"`` keeps answers concise and interactive; empty disables the hint.
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
@@ -190,6 +225,11 @@ class Settings:
     def litellm_embed_model(self) -> str:
         """Embedding model id with the LiteLLM provider prefix."""
         return f"nvidia_nim/{self.embed_model_id}"
+
+    @property
+    def litellm_fallback_chat_models(self) -> tuple[str, ...]:
+        """Fallback chat model ids with the LiteLLM provider prefix."""
+        return tuple(f"nvidia_nim/{model_id}" for model_id in self.fallback_chat_model_ids)
 
 
 def _build_settings() -> Settings:
@@ -222,6 +262,15 @@ def _build_settings() -> Settings:
         max_tool_calls=_as_int("MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS),
         max_output_tokens=_as_int("NVIDIA_MAX_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
         chat_timeout_seconds=_as_int("NVIDIA_TIMEOUT_SECONDS", DEFAULT_CHAT_TIMEOUT_SECONDS),
+        fallback_chat_model_ids=_as_csv(
+            "NVIDIA_FALLBACK_CHAT_MODELS", DEFAULT_FALLBACK_CHAT_MODEL_IDS
+        ),
+        fallback_chat_timeout_seconds=_as_int(
+            "NVIDIA_FALLBACK_TIMEOUT_SECONDS", DEFAULT_FALLBACK_CHAT_TIMEOUT_SECONDS
+        ),
+        primary_cooldown_seconds=_as_int(
+            "NVIDIA_PRIMARY_COOLDOWN_SECONDS", DEFAULT_PRIMARY_COOLDOWN_SECONDS
+        ),
         reasoning_effort=os.getenv("NVIDIA_REASONING_EFFORT", DEFAULT_REASONING_EFFORT).strip(),
         rerank_model_id=os.getenv("NVIDIA_RERANK_MODEL", "").strip(),
     )
@@ -304,6 +353,35 @@ def _drop_thought_parts(response: Any) -> bool:
     return False
 
 
+def _litellm_model_kwargs(
+    model_id: str,
+    settings: Settings,
+    *,
+    timeout_seconds: int,
+    include_reasoning_effort: bool,
+) -> dict[str, object]:
+    """Build LiteLlm kwargs for one model.
+
+    The key and base URL are passed explicitly so behaviour is deterministic even
+    if the environment is mutated later. ``num_retries=0`` prevents LiteLLM's
+    hidden retries from multiplying the wall-clock bound.
+    """
+    kwargs: dict[str, object] = {"model": f"nvidia_nim/{model_id}"}
+    if settings.nvidia_api_key:
+        kwargs["api_key"] = settings.nvidia_api_key
+    if settings.nvidia_base_url:
+        kwargs["api_base"] = settings.nvidia_base_url
+    kwargs["max_tokens"] = settings.max_output_tokens
+    kwargs["timeout"] = timeout_seconds
+    kwargs["num_retries"] = 0
+    # gpt-oss exposes a reasoning budget. "low" keeps simple tool-routing turns
+    # short. Other providers may reject the hint, so it is only sent to the
+    # primary model (and only when configured).
+    if include_reasoning_effort and settings.reasoning_effort:
+        kwargs["extra_body"] = {"reasoning_effort": settings.reasoning_effort}
+    return kwargs
+
+
 @lru_cache(maxsize=1)
 def get_chat_model():
     """Return the single LiteLLM chat model shared by all five agents.
@@ -315,10 +393,20 @@ def get_chat_model():
     The returned object is cached: every agent receives the exact same instance,
     satisfying the "share one chat-model configuration" requirement.
 
-    The model is wrapped with a hard wall-clock timeout. LiteLLM's own
-    ``timeout`` is not reliably forwarded by every provider adapter (the NVIDIA
-    NIM path was observed waiting for its default 60 s), so the bound is applied
-    with :func:`asyncio.wait_for` around each generation step.
+    The model is wrapped with two reliability guards because the hosted NVIDIA
+    NIM endpoint intermittently stops responding:
+
+    * Each attempt has a hard wall-clock bound applied with ``asyncio.timeout``.
+      LiteLLM's own ``timeout`` is not reliable (a 60 s setting was observed to
+      run for 183 s because of hidden retries).
+    * If the primary times out or errors, the same request is retried on the
+      configured fallback models. A circuit breaker then skips the primary for
+      ``NVIDIA_PRIMARY_COOLDOWN_SECONDS`` so one dead endpoint does not add a
+      minute to every step of a multi-agent run.
+
+    The UI only shows the final answer, so the wrapper always asks for a complete
+    (non-streaming) completion. NIM's streaming tool-call parser intermittently
+    rejects gpt-oss deltas; a complete JSON body is parsed reliably.
     """
     import asyncio
     from collections.abc import AsyncGenerator
@@ -326,77 +414,182 @@ def get_chat_model():
     from google.adk.models.lite_llm import LiteLlm
     from pydantic import PrivateAttr
 
-    class TimeoutLiteLlm(LiteLlm):
-        """LiteLlm that cancels a generation step after a fixed number of seconds."""
+    class ReliableLiteLlm(LiteLlm):
+        """LiteLlm with a hard per-attempt bound and automatic failover."""
 
         _timeout_seconds: float = PrivateAttr(default=DEFAULT_CHAT_TIMEOUT_SECONDS)
+        _fallback_timeout_seconds: float = PrivateAttr(
+            default=DEFAULT_FALLBACK_CHAT_TIMEOUT_SECONDS
+        )
+        _primary_cooldown_seconds: float = PrivateAttr(default=DEFAULT_PRIMARY_COOLDOWN_SECONDS)
+        _primary_unavailable_until: float = PrivateAttr(default=0.0)
+        _fallback_models: list[Any] = PrivateAttr(default_factory=list)
 
-        def __init__(self, *, timeout_seconds: float = DEFAULT_CHAT_TIMEOUT_SECONDS, **kwargs: Any):
+        def __init__(
+            self,
+            *,
+            timeout_seconds: float = DEFAULT_CHAT_TIMEOUT_SECONDS,
+            fallback_timeout_seconds: float = DEFAULT_FALLBACK_CHAT_TIMEOUT_SECONDS,
+            primary_cooldown_seconds: float = DEFAULT_PRIMARY_COOLDOWN_SECONDS,
+            fallback_models: list[Any] | None = None,
+            **kwargs: Any,
+        ):
             super().__init__(**kwargs)
             self._timeout_seconds = float(timeout_seconds)
+            self._fallback_timeout_seconds = float(fallback_timeout_seconds)
+            self._primary_cooldown_seconds = float(primary_cooldown_seconds)
+            self._primary_unavailable_until = 0.0
+            self._fallback_models = list(fallback_models or [])
 
-        async def generate_content_async(
-            self, llm_request: Any, stream: bool = False
-        ) -> AsyncGenerator[Any, None]:
-            # The NVIDIA NIM streaming parser intermittently rejects gpt-oss
-            # tool-call deltas (``unexpected tokens remaining in message
-            # header: Some("to=functions.rag_search")``), which aborts the whole
-            # run with no answer. The same completion is parsed reliably when
-            # it arrives as one JSON body, and the UI is configured to show
-            # only the final answer anyway, so ask LiteLLM for the complete
-            # response instead of token deltas. The SSE keep-alive in
-            # ``code_helper.web`` keeps the browser connection warm meanwhile.
-            source = super().generate_content_async(llm_request, stream=False)
+        def reset_health(self) -> None:
+            """Clear the circuit breaker (used by tests and after outages)."""
+            self._primary_unavailable_until = 0.0
+
+        def _primary_is_cooling_down(self) -> bool:
+            return bool(self._fallback_models) and (
+                time.monotonic() < self._primary_unavailable_until
+            )
+
+        def _mark_primary_failed(self) -> None:
+            if self._primary_cooldown_seconds > 0:
+                self._primary_unavailable_until = time.monotonic() + self._primary_cooldown_seconds
+
+        async def _collect(
+            self, source: AsyncGenerator[Any, None], timeout_seconds: float
+        ) -> list[Any]:
+            """Drain one generation attempt under a single wall-clock deadline."""
+            items: list[Any] = []
             try:
-                while True:
-                    try:
-                        item = await asyncio.wait_for(
-                            source.__anext__(), timeout=self._timeout_seconds
-                        )
-                    except StopAsyncIteration:
-                        return
-                    if _drop_thought_parts(item):
-                        continue
-                    yield item
-            except TimeoutError:
-                # A hard bound is still enforced, but the run ends with a
-                # readable answer instead of a traceback and an empty UI.
-                from google.adk.models.llm_response import LlmResponse
-                from google.genai import types
-
-                yield LlmResponse(
-                    content=types.Content(
-                        role="model",
-                        parts=[types.Part(text=TIMEOUT_FALLBACK_TEXT)],
-                    )
-                )
+                async with asyncio.timeout(timeout_seconds):
+                    async for item in source:
+                        if _drop_thought_parts(item):
+                            continue
+                        items.append(item)
             finally:
                 try:
                     await source.aclose()
                 except Exception:  # pragma: no cover - best-effort cleanup
                     pass
+            return items
+
+        async def generate_content_async(
+            self, llm_request: Any, stream: bool = False
+        ) -> AsyncGenerator[Any, None]:
+            attempts: list[tuple[str, Any]] = []
+            if not self._primary_is_cooling_down():
+                attempts.append(("primary", None))
+            attempts.extend(("fallback", model) for model in self._fallback_models)
+            if not attempts:  # no fallback configured, or breaker with no fallback
+                attempts.append(("primary", None))
+
+            last_error: Exception | None = None
+            for kind, fallback_model in attempts:
+                if kind == "primary":
+                    timeout_seconds = self._timeout_seconds
+                    request = llm_request
+                    source = super().generate_content_async(request, stream=False)
+                else:
+                    timeout_seconds = self._fallback_timeout_seconds
+                    # LiteLlm prefers ``llm_request.model`` over its own model, so
+                    # point the copy at the fallback. The original request is left
+                    # untouched for a later retry.
+                    request = llm_request.model_copy(deep=False)
+                    request.model = fallback_model.model
+                    source = fallback_model.generate_content_async(request, stream=False)
+
+                try:
+                    items = await self._collect(source, timeout_seconds)
+                except TimeoutError:
+                    last_error = TimeoutError(
+                        f"{kind} model did not respond within {timeout_seconds:.0f}s"
+                    )
+                    if kind == "primary":
+                        self._mark_primary_failed()
+                        _log.warning(
+                            "Primary chat model timed out after %.0fs; trying fallback.",
+                            timeout_seconds,
+                        )
+                    else:
+                        _log.warning(
+                            "Fallback chat model %s timed out after %.0fs.",
+                            getattr(fallback_model, "model", "?"),
+                            timeout_seconds,
+                        )
+                    continue
+                except Exception as exc:  # noqa: BLE001 - fail over on any provider error
+                    last_error = exc
+                    if kind == "primary":
+                        self._mark_primary_failed()
+                        _log.warning(
+                            "Primary chat model failed (%s); trying fallback.",
+                            type(exc).__name__,
+                        )
+                    else:
+                        _log.warning(
+                            "Fallback chat model %s failed (%s).",
+                            getattr(fallback_model, "model", "?"),
+                            type(exc).__name__,
+                        )
+                    continue
+
+                if not items:
+                    # A thought-only or empty response is not an answer; give the
+                    # next model a chance instead of showing a blank message.
+                    if kind == "primary":
+                        self._mark_primary_failed()
+                    continue
+
+                if kind == "primary":
+                    self._primary_unavailable_until = 0.0
+                for item in items:
+                    yield item
+                return
+
+            _log.error("All chat models failed; last error: %s", last_error)
+            # A bounded failure still ends with a readable answer instead of a
+            # traceback and an empty UI.
+            from google.adk.models.llm_response import LlmResponse
+            from google.genai import types
+
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text=TIMEOUT_FALLBACK_TEXT)],
+                )
+            )
 
     settings = get_settings()
-    # Pass the key/base explicitly. This keeps behaviour deterministic even if
-    # the environment is mutated later, and avoids relying on implicit lookup.
-    kwargs: dict[str, object] = {"model": settings.litellm_chat_model}
-    if settings.nvidia_api_key:
-        kwargs["api_key"] = settings.nvidia_api_key
-    if settings.nvidia_base_url:
-        kwargs["api_base"] = settings.nvidia_base_url
-    # Bound generation length: latency grows with output tokens, and the
-    # worker instructions ask for short, cited answers rather than essays.
-    kwargs["max_tokens"] = settings.max_output_tokens
-    # One attempt keeps worst-case latency predictable; the embedding stage
-    # keeps its own retry policy.
-    kwargs["timeout"] = settings.chat_timeout_seconds
-    kwargs["num_retries"] = 0
-    # gpt-oss exposes a reasoning budget. "low" keeps simple tool-routing turns
-    # fast and stops the model from narrating its chain of thought. The hint is
-    # provider-specific, so it is configurable and omitted when empty.
-    if settings.reasoning_effort:
-        kwargs["extra_body"] = {"reasoning_effort": settings.reasoning_effort}
-    return TimeoutLiteLlm(timeout_seconds=settings.chat_timeout_seconds, **kwargs)
+    kwargs = _litellm_model_kwargs(
+        settings.chat_model_id,
+        settings,
+        timeout_seconds=settings.chat_timeout_seconds,
+        include_reasoning_effort=True,
+    )
+
+    fallback_models: list[Any] = []
+    seen = {settings.chat_model_id}
+    for model_id in settings.fallback_chat_model_ids:
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        fallback_models.append(
+            LiteLlm(
+                **_litellm_model_kwargs(
+                    model_id,
+                    settings,
+                    timeout_seconds=settings.fallback_chat_timeout_seconds,
+                    include_reasoning_effort=False,
+                )
+            )
+        )
+
+    return ReliableLiteLlm(
+        timeout_seconds=settings.chat_timeout_seconds,
+        fallback_timeout_seconds=settings.fallback_chat_timeout_seconds,
+        primary_cooldown_seconds=settings.primary_cooldown_seconds,
+        fallback_models=fallback_models,
+        **kwargs,
+    )
 
 
 def describe_configuration() -> dict[str, object]:
@@ -427,5 +620,8 @@ def describe_configuration() -> dict[str, object]:
         "max_tool_calls": settings.max_tool_calls,
         "max_output_tokens": settings.max_output_tokens,
         "chat_timeout_seconds": settings.chat_timeout_seconds,
+        "fallback_chat_models": list(settings.fallback_chat_model_ids),
+        "fallback_chat_timeout_seconds": settings.fallback_chat_timeout_seconds,
+        "primary_cooldown_seconds": settings.primary_cooldown_seconds,
         "reasoning_effort": settings.reasoning_effort or None,
     }
